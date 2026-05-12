@@ -8,14 +8,25 @@
   "theme_color": "#06b6d4",
   "icons": [
     {
-      "src": "https://cdn.jsdelivr.net/gh/lucide-react/lucide@latest/icons/zap.svg",
+      "src": "https://cdn-icons-png.flaticon.com/192/265/265689.png",
       "sizes": "192x192",
-      "type": "image/svg+xml"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
-      "src": "https://cdn.jsdelivr.net/gh/lucide-react/lucide@latest/icons/zap.svg",
+      "src": "https://cdn-icons-png.flaticon.com/512/265/265689.png",
       "sizes": "512x512",
-      "type": "image/svg+xml"
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/265/265689.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
-  ]
+  ],
+  "id": "/?source=pwa",
+  "orientation": "any",
+  "scope": "/"
 }

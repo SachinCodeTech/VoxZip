@@ -24,20 +24,24 @@ import {
   Shield,
   Coins,
   ArrowLeft,
-  Briefcase
+  Briefcase,
+  Home,
+  LayoutGrid,
+  Menu,
+  X,
+  Eye,
+  EyeOff,
+  FileText,
+  Image as ImageIcon,
+  Video,
+  Music
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { saveAs } from 'file-saver';
 import { cn, formatBytes } from './lib/utils';
 import * as zip from '@zip.js/zip.js';
 // @ts-ignore
-import { Archive } from 'libarchive.js';
-
-// Initialize LibArchive (Worker from CDN for stability in preview)
-// @ts-ignore
-Archive.init({
-  workerUrl: 'https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/worker-bundle.js'
-});
+import { Archive as LibArchive } from 'libarchive.js';
 
 // Types
 interface FileItem {
@@ -45,23 +49,145 @@ interface FileItem {
   file: File;
   progress: number;
   status: 'idle' | 'processing' | 'completed' | 'error';
+  compressedSize?: number;
+  errorMessage?: string;
 }
+
+interface OperationSummary {
+  id: string;
+  type: Mode;
+  timestamp: Date;
+  fileName: string;
+  fileCount: number;
+  status: 'success' | 'failure';
+  details?: string;
+}
+
+const getFileIcon = (fileName: string) => {
+  const ext = fileName.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    // Documents
+    case 'pdf': return <FileText className="w-6 h-6 text-red-400" />;
+    case 'doc':
+    case 'docx': return <FileText className="w-6 h-6 text-blue-400" />;
+    case 'txt': return <FileText className="w-6 h-6 text-gray-400" />;
+    // Media
+    case 'jpg':
+    case 'jpeg':
+    case 'png':
+    case 'gif':
+    case 'webp':
+    case 'svg': return <ImageIcon className="w-6 h-6 text-emerald-400" />;
+    case 'mp4':
+    case 'mov':
+    case 'avi':
+    case 'mkv': return <Video className="w-6 h-6 text-purple-400" />;
+    case 'mp3':
+    case 'wav':
+    case 'flac': return <Music className="w-6 h-6 text-pink-400" />;
+    // Archives
+    case 'zip':
+    case 'rar':
+    case '7z':
+    case 'tar':
+    case 'gz': return <ArchiveIcon className="w-6 h-6 text-amber-400" />;
+    // Default
+    default: return <FileIcon className="w-6 h-6 text-gray-400" />;
+  }
+};
 
 type Mode = 'compress' | 'extract';
 type CompressionLevel = 'fast' | 'normal' | 'ultra';
 
 export default function App() {
+  const [isLaunching, setIsLaunching] = useState(true);
   const [activeView, setActiveView] = useState<'home' | 'about' | 'info' | 'privacy'>('home');
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [previewFiles, setPreviewFiles] = useState<{name: string, size: number}[] | null>(null);
+  const [history, setHistory] = useState<OperationSummary[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
   const [mode, setMode] = useState<Mode>('compress');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
   const [password, setPassword] = useState('');
+  const [encryptionMethod, setEncryptionMethod] = useState<'aes' | 'zipCrypto'>('aes');
   const [level, setLevel] = useState<CompressionLevel>('normal');
+  const [zip64, setZip64] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [archiveName, setArchiveName] = useState('archive.zip');
   const [showProgress, setShowProgress] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCmd = e.metaKey || e.ctrlKey;
+      
+      if (isCmd && e.key === 'o') {
+        e.preventDefault();
+        fileInputRef.current?.click();
+      }
+      
+      if (isCmd && e.key === 'd') {
+        e.preventDefault();
+        clearFiles();
+      }
+      
+      if (e.key === 'Enter' && !isProcessing && files.length > 0) {
+        mode === 'compress' ? compressFiles() : extractFiles();
+      }
+
+      if (e.key === 'Escape') {
+        setPreviewFiles(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isProcessing, files, mode]);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+      setIsInstallable(true);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    if (outcome === 'accepted') {
+      setIsInstallable(false);
+    }
+    setDeferredPrompt(null);
+  };
+
+  useEffect(() => {
+    try {
+      // @ts-ignore
+      LibArchive.init({
+        workerUrl: 'https://cdn.jsdelivr.net/npm/libarchive.js@2.0.2/dist/worker-bundle.js'
+      });
+    } catch (e) {
+      console.error('LibArchive init failed:', e);
+    }
+
+    const timer = setTimeout(() => setIsLaunching(false), 1500);
+    return () => clearTimeout(timer);
+  }, []);
 
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -77,17 +203,6 @@ export default function App() {
   }, [mode, isProcessing]);
 
   const addFiles = (newFiles: File[]) => {
-    if (mode === 'extract' && newFiles.length > 0) {
-      const f = newFiles[0];
-      setFiles([{
-        id: Math.random().toString(36).substr(2, 9),
-        file: f,
-        progress: 0,
-        status: 'idle'
-      }]);
-      return;
-    }
-
     const fileItems: FileItem[] = newFiles.map(f => ({
       id: Math.random().toString(36).substr(2, 9),
       file: f,
@@ -109,6 +224,45 @@ export default function App() {
     }
   };
 
+  const handlePreview = async (item: FileItem) => {
+    try {
+      const extension = item.file.name.split('.').pop()?.toLowerCase();
+      
+      if (extension === 'zip') {
+        const zipReader = new zip.ZipReader(new zip.BlobReader(item.file));
+        const entries = await zipReader.getEntries();
+        setPreviewFiles(entries.filter(e => !e.directory).map(e => ({ name: e.filename, size: e.uncompressedSize || 0 })));
+        await zipReader.close();
+      } else {
+        // Use LibArchive for RAR, 7z, etc.
+        // @ts-ignore
+        const archive = await LibArchive.open(item.file);
+        const obj = await archive.extractFiles();
+        
+        const fileList: {name: string, size: number}[] = [];
+        const processObj = (data: any, path = '') => {
+          for (const key in data) {
+            if (data[key] instanceof File) {
+              fileList.push({ name: `${path}${key}`, size: data[key].size });
+            } else if (typeof data[key] === 'object') {
+              processObj(data[key], `${path}${key}/`);
+            }
+          }
+        };
+        processObj(obj);
+        setPreviewFiles(fileList);
+      }
+    } catch (e: any) {
+      console.error('Preview failed:', e);
+      const msg = e.message?.toLowerCase() || '';
+      let errorText = 'Unable to index archive.';
+      if (msg.includes('password')) errorText = 'Archive is password protected. Cannot preview.';
+      if (msg.includes('corrupt') || msg.includes('signature')) errorText = 'Archive appears corrupted.';
+      
+      alert(errorText);
+    }
+  };
+
   // Compression Logic
   const compressFiles = async () => {
     if (files.length === 0) return;
@@ -120,7 +274,7 @@ export default function App() {
       const blobWriter = new zip.BlobWriter('application/zip');
       const zipWriter = new zip.ZipWriter(blobWriter, {
         password: password || undefined,
-        zip64: true,
+        zip64: zip64,
       });
 
       const levelMap: Record<CompressionLevel, number> = {
@@ -135,6 +289,8 @@ export default function App() {
         
         await zipWriter.add(item.file.name, new zip.BlobReader(item.file), {
           level: levelMap[level],
+          // @ts-ignore
+          encryptionMethod: password ? encryptionMethod : undefined,
           onprogress: (current, total) => {
             const p = (current / total) * 100;
             const totalP = (i / files.length) * 100 + (p / files.length);
@@ -147,6 +303,25 @@ export default function App() {
       }
 
       const resultBlob = await zipWriter.close();
+      
+      const summary: OperationSummary = {
+        id: Math.random().toString(36).substr(2, 9),
+        type: 'compress',
+        timestamp: new Date(),
+        fileName: archiveName.endsWith('.zip') ? archiveName : `${archiveName}.zip`,
+        fileCount: files.length,
+        status: 'success'
+      };
+      setHistory(prev => [summary, ...prev]);
+
+      const totalOriginalSize = files.reduce((acc, f) => acc + f.file.size, 0);
+      setFiles(prev => prev.map(f => ({
+        ...f,
+        status: 'completed',
+        progress: 100,
+        compressedSize: (f.file.size / totalOriginalSize) * resultBlob.size // Proportional estimation
+      })));
+
       saveAs(resultBlob, archiveName.endsWith('.zip') ? archiveName : `${archiveName}.zip`);
       setOverallProgress(100);
       
@@ -156,8 +331,18 @@ export default function App() {
         setOverallProgress(0);
       }, 1500);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Compression failed:', error);
+      const summary: OperationSummary = {
+        id: Math.random().toString(36).substr(2, 9),
+        type: 'compress',
+        timestamp: new Date(),
+        fileName: archiveName,
+        fileCount: files.length,
+        status: 'failure',
+        details: error.message || 'Unknown compression error'
+      };
+      setHistory(prev => [summary, ...prev]);
       alert('Compression failed. Check file access or password requirements.');
       setIsProcessing(false);
     }
@@ -171,99 +356,237 @@ export default function App() {
     setOverallProgress(0);
 
     try {
-      const archiveFile = files[0].file;
-      const extension = archiveFile.name.split('.').pop()?.toLowerCase();
+      for (let archiveIdx = 0; archiveIdx < files.length; archiveIdx++) {
+        const item = files[archiveIdx];
+        setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'processing' } : f));
+        
+        const archiveFile = item.file;
+        const extension = archiveFile.name.split('.').pop()?.toLowerCase();
 
-      if (extension === 'zip') {
-        const zipReader = new zip.ZipReader(new zip.BlobReader(archiveFile));
-        const entries = await zipReader.getEntries();
-        
-        for (let i = 0; i < entries.length; i++) {
-          const entry = entries[i] as any;
-          if (entry.getData && !entry.directory) {
-            const content = await entry.getData(new zip.BlobWriter(), {
-              password: password || undefined,
-              onprogress: (current: number, total: number) => {
-                const p = (current / total) * 100;
-                setOverallProgress(Math.min(((i + p / 100) / entries.length) * 100, 99));
+        try {
+          if (extension === 'zip') {
+            const zipReader = new zip.ZipReader(new zip.BlobReader(archiveFile));
+            const entries = await zipReader.getEntries();
+            
+            for (let i = 0; i < entries.length; i++) {
+              const entry = entries[i] as any;
+              if (entry.getData && !entry.directory) {
+                try {
+                  const content = await entry.getData(new zip.BlobWriter(), {
+                    password: password || undefined,
+                    onprogress: (current: number, total: number) => {
+                      const p = (current / total) * 100;
+                      const globalP = (archiveIdx / files.length) * 100 + (p / files.length);
+                      setOverallProgress(Math.min(globalP, 99));
+                      setFiles(prev => prev.map(f => f.id === item.id ? { ...f, progress: p } : f));
+                    }
+                  });
+                  saveAs(content, entry.filename);
+                } catch (e: any) {
+                  const msg = e.message?.toLowerCase() || '';
+                  if (msg.includes('password') || msg.includes('decrypt')) {
+                    throw new Error(`Password incorrect or required for ${entry.filename}`);
+                  }
+                  if (msg.includes('signature') || msg.includes('central directory')) {
+                    throw new Error(`Archive corrupted or structure invalid: ${item.file.name}`);
+                  }
+                  throw e;
+                }
               }
-            });
-            saveAs(content, entry.filename);
-          }
-        }
-        await zipReader.close();
-      } else {
-        // RAR and others use libarchive.js
-        // @ts-ignore
-        const archive = await Archive.open(archiveFile);
-        const obj = await archive.extractFiles();
-        
-        const downloadFiles = async (data: any, path = '') => {
-          for (const key in data) {
-            const item = data[key];
-            if (item instanceof File) {
-               saveAs(item, key);
-            } else if (typeof item === 'object') {
-              await downloadFiles(item, `${path}${key}/`);
             }
+            await zipReader.close();
+          } else {
+            // @ts-ignore
+            const archive = await LibArchive.open(archiveFile);
+            const obj = await archive.extractFiles();
+            
+            const downloadFiles = async (data: any, path = '') => {
+              for (const key in data) {
+                const innerItem = data[key];
+                if (innerItem instanceof File) {
+                   saveAs(innerItem, key);
+                } else if (typeof innerItem === 'object') {
+                  await downloadFiles(innerItem, `${path}${key}/`);
+                }
+              }
+            };
+            
+            await downloadFiles(obj);
           }
-        };
+          setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'completed', progress: 100 } : f));
+        } catch (e: any) {
+          console.error(`Inner extraction error for ${item.file.name}:`, e);
+          setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error', errorMessage: e.message || 'Format error' } : f));
+        }
         
-        await downloadFiles(obj);
+        setOverallProgress(((archiveIdx + 1) / files.length) * 100);
       }
 
       setOverallProgress(100);
+      
+      const summary: OperationSummary = {
+        id: Math.random().toString(36).substr(2, 9),
+        type: 'extract',
+        timestamp: new Date(),
+        fileName: files.length === 1 ? files[0].file.name : `${files.length} Archives`,
+        fileCount: files.length,
+        status: 'success'
+      };
+      setHistory(prev => [summary, ...prev]);
+
       setTimeout(() => {
         setIsProcessing(false);
         setShowProgress(false);
         setOverallProgress(0);
       }, 1500);
 
-    } catch (error) {
-      console.error('Extraction failed:', error);
-      alert('Extraction failed. Format might be unsupported or restricted by the browser.');
+    } catch (error: any) {
+      console.error('Batch extraction failed:', error);
+      alert(`Extraction stalled: ${error.message || 'Unknown error'}`);
       setIsProcessing(false);
     }
   };
 
   return (
     <div className={cn(
-      "min-h-screen transition-colors duration-500 selection:bg-cyan-500/30 font-sans",
-      isDarkMode ? "bg-[#0a0a0c] text-white" : "bg-gray-50 text-gray-900"
+      "min-h-screen transition-all duration-700 font-sans selection:bg-cyan-500/30 selection:text-cyan-200 overflow-x-hidden",
+      isDarkMode ? "bg-[#050507] text-white" : "bg-gray-50 text-gray-900"
     )}>
-      {/* Background Blobs */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+      <AnimatePresence>
+        {isLaunching && (
+          <motion.div
+            key="splash"
+            initial={{ opacity: 1 }}
+            exit={{ opacity: 0, scale: 1.1, filter: 'blur(20px)' }}
+            transition={{ duration: 1, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed inset-0 z-[200] bg-[#050507] flex flex-col items-center justify-center"
+          >
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.8, ease: "easeOut" }}
+              className="relative"
+            >
+              <div className="w-28 h-28 rounded-[2rem] bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-600 flex items-center justify-center shadow-[0_0_80px_rgba(34,211,238,0.25)]">
+                <Zap className="w-14 h-14 text-white fill-white animate-pulse" />
+              </div>
+              <motion.div 
+                className="absolute inset-0 rounded-[2rem] bg-cyan-400 blur-3xl opacity-30 -z-10"
+                animate={{ scale: [1, 1.4, 1], opacity: [0.2, 0.5, 0.2] }}
+                transition={{ duration: 3, repeat: Infinity }}
+              />
+            </motion.div>
+            
+            <div className="mt-16 flex flex-col items-center gap-6">
+              <div className="overflow-hidden">
+                <motion.h2 
+                  initial={{ y: 50, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  transition={{ delay: 0.2, duration: 0.6 }}
+                  className="text-4xl font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-400 to-purple-500"
+                >
+                  VOXZIP
+                </motion.h2>
+              </div>
+              
+              <div className="relative w-56 h-1 bg-white/5 rounded-full overflow-hidden">
+                <motion.div 
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-cyan-500 to-purple-500"
+                  initial={{ width: "0%" }}
+                  animate={{ width: "100%" }}
+                  transition={{ duration: 2, ease: [0.65, 0, 0.35, 1] }}
+                />
+              </div>
+              
+              <motion.p 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.8 }}
+                className="text-[9px] font-mono font-bold uppercase tracking-[0.5em] text-gray-500 ml-[0.5em]"
+              >
+                Zero-Knowledge Processing
+              </motion.p>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Enhanced Background Mesh */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
         <div className={cn(
-          "absolute -top-[10%] -left-[10%] w-[40%] h-[40%] rounded-full blur-[120px] transition-opacity duration-1000",
-          isDarkMode ? "bg-cyan-500/10 opacity-50" : "bg-cyan-500/5 opacity-20"
+          "absolute -top-[10%] -left-[10%] w-[60%] h-[60%] rounded-full blur-[140px] transition-all duration-1000",
+          isDarkMode ? "bg-cyan-500/10 opacity-40 mix-blend-screen" : "bg-cyan-500/5 opacity-30"
         )} />
         <div className={cn(
-          "absolute -bottom-[10%] -right-[10%] w-[40%] h-[40%] rounded-full blur-[120px] transition-opacity duration-1000",
-          isDarkMode ? "bg-purple-600/10 opacity-50" : "bg-purple-600/5 opacity-20"
+          "absolute top-1/4 -right-[10%] w-[40%] h-[40%] rounded-full blur-[120px] transition-all duration-1000 delay-300",
+          isDarkMode ? "bg-purple-600/10 opacity-30 mix-blend-screen" : "bg-purple-600/5 opacity-15"
+        )} />
+        <div className={cn(
+          "absolute -bottom-[10%] left-1/4 w-[50%] h-[50%] rounded-full blur-[140px] transition-all duration-1000 delay-500",
+          isDarkMode ? "bg-blue-600/10 opacity-20 mix-blend-screen" : "bg-blue-600/5 opacity-10"
         )} />
       </div>
 
       <header className={cn(
-        "fixed top-0 w-full z-50 border-b px-6 py-4 flex items-center justify-between backdrop-blur-xl",
+        "fixed top-0 w-full z-50 border-b px-6 py-4 flex items-center justify-between backdrop-blur-xl transition-all duration-500",
         isDarkMode ? "bg-[#0a0a0c]/80 border-white/10" : "bg-white/80 border-gray-200 shadow-sm"
       )}>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveView('home')}>
           <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
             <Zap className="w-6 h-6 text-white fill-white" />
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500">
+          <div className="flex flex-col">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
               VoxZip
             </h1>
-            <p className="text-[10px] text-gray-500 font-mono uppercase tracking-widest leading-none mt-0.5">High Performance Archiving</p>
+            <p className="hidden sm:block text-[10px] text-gray-500 font-mono uppercase tracking-widest leading-none mt-1">High Performance Archiving</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
+            {isInstallable && (
+              <button 
+                onClick={handleInstallClick}
+                className={cn(
+                  "px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-tighter border transition-all duration-300 flex items-center gap-2",
+                  isDarkMode 
+                    ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/20" 
+                    : "bg-cyan-50 border-cyan-200 text-cyan-600 hover:bg-cyan-100"
+                )}
+              >
+                <Download className="w-3.5 h-3.5" />
+                Install App
+              </button>
+            )}
+            <button 
+              onClick={() => setIsConfigOpen(!isConfigOpen)}
+            className={cn(
+              "p-2 rounded-xl transition-all duration-300 border xl:hidden",
+              isConfigOpen 
+                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
+                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
+            )}
+          >
+            {isConfigOpen ? <X className="w-5 h-5" /> : <Settings2 className="w-5 h-5" />}
+          </button>
+
+          <button 
+            onClick={() => setShowAbout(true)}
+            className={cn(
+              "p-2 rounded-xl transition-all duration-300 border",
+              showAbout 
+                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
+                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
+            )}
+            title="About VoxZip"
+          >
+            <Info className="w-5 h-5" />
+          </button>
+          
           <button 
             onClick={() => setActiveView(activeView === 'info' ? 'home' : 'info')}
             className={cn(
-              "p-2 rounded-xl transition-all duration-300 border hidden sm:flex",
+              "p-2 rounded-xl transition-all duration-300 border hidden lg:flex",
               activeView === 'info' 
                 ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
                 : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
@@ -271,13 +594,28 @@ export default function App() {
           >
             <HelpCircle className="w-5 h-5" />
           </button>
+          
+          <button 
+            onClick={() => setShowHistory(!showHistory)}
+            className={cn(
+              "p-2 rounded-xl transition-all duration-300 border relative group",
+              showHistory 
+                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
+                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
+            )}
+            title="Operations Hub"
+          >
+            <LayoutGrid className="w-5 h-5" />
+            {history.length > 0 && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-cyan-500 rounded-full border-2 border-[#050507] animate-pulse" />}
+          </button>
+
           <button 
             onClick={() => setIsDarkMode(!isDarkMode)}
             className={cn(
-              "p-2 rounded-xl transition-all duration-300 border hover:shadow-lg",
+              "p-2.5 rounded-xl transition-all duration-300 border hover:shadow-lg",
               isDarkMode 
-                ? "bg-white/5 border-white/10 text-gray-400 hover:text-white" 
-                : "bg-white border-gray-200 text-gray-600 hover:text-gray-900 shadow-sm"
+                ? "bg-white/10 border-white/5 text-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.1)]" 
+                : "bg-white border-gray-200 text-gray-600 shadow-sm"
             )}
           >
             {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -338,48 +676,48 @@ export default function App() {
                   )}
                 </div>
 
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  onDragOver={onDragOver}
-                  onDrop={onDrop}
-                  onClick={() => !isProcessing && fileInputRef.current?.click()}
-                  className={cn(
-                    "relative group h-80 rounded-3xl border-2 border-dashed flex flex-col items-center justify-center gap-4 cursor-pointer transition-all duration-500 overflow-hidden",
-                    isDarkMode 
-                      ? "border-white/10 bg-white/[0.02] hover:border-cyan-500/50 hover:bg-cyan-500/[0.02]" 
-                      : "border-gray-200 bg-white hover:border-cyan-500/50 hover:bg-cyan-50/30 shadow-sm",
-                    isProcessing && "opacity-50 pointer-events-none"
-                  )}
-                >
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleFileSelect} 
-                    className="hidden" 
-                    multiple={mode === 'compress'} 
-                  />
-                  
-                  <div className={cn(
-                    "w-20 h-20 rounded-3xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-6 transition-all duration-500 shadow-2xl",
-                    isDarkMode ? "bg-white/5 border border-white/5" : "bg-gray-100 border border-gray-100"
-                  )}>
-                    <Upload className="w-10 h-10 text-cyan-500" />
-                  </div>
-                  
-                  <div className="text-center px-6">
-                    <p className={cn(
-                      "text-xl font-bold tracking-tight",
-                      isDarkMode ? "text-gray-200" : "text-gray-700"
-                    )}>
-                      {mode === 'compress' ? 'Drop files to compress' : 'Drop archive to extract'}
-                    </p>
-                    <p className="text-sm text-gray-500 mt-2 max-w-xs mx-auto">
-                      {mode === 'compress' 
-                        ? 'Add multiple files or folders. Password protection supported.' 
-                        : 'Supports .ZIP, .RAR, .7z, .TAR and more.'}
-                    </p>
-                  </div>
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              onDragOver={onDragOver}
+              onDrop={onDrop}
+              onClick={() => !isProcessing && fileInputRef.current?.click()}
+              className={cn(
+                "relative group h-64 rounded-3xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
+                isDarkMode 
+                  ? "border-white/10 bg-white/[0.03] hover:border-cyan-500/50 hover:bg-cyan-500/[0.05]" 
+                  : "border-gray-200 bg-white/60 hover:border-cyan-500/50 hover:bg-cyan-50/50 shadow-sm",
+                isProcessing && "opacity-50 pointer-events-none"
+              )}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={handleFileSelect} 
+                className="hidden" 
+                multiple={mode === 'compress'} 
+              />
+              
+              <div className={cn(
+                "w-16 h-16 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-6 transition-all duration-500 shadow-2xl",
+                isDarkMode ? "bg-white/10 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
+              )}>
+                <Upload className="w-8 h-8 text-cyan-500" />
+              </div>
+              
+              <div className="text-center px-6">
+                <p className={cn(
+                  "text-lg font-bold tracking-tight",
+                  isDarkMode ? "text-gray-200" : "text-gray-700"
+                )}>
+                  {mode === 'compress' ? 'Drop files to compress' : 'Drop archives to extract'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1 max-w-sm mx-auto font-medium">
+                  {mode === 'compress' 
+                    ? 'Add multiple files or folders. Secure AES-256 encryption available.' 
+                    : 'Batch extract .ZIP, .RAR, .7z and more. Sequential processing.'}
+                </p>
+              </div>
 
                   {isProcessing && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm z-50">
@@ -407,34 +745,55 @@ export default function App() {
                           animate={{ scale: 1, opacity: 1 }}
                           exit={{ scale: 0.8, opacity: 0 }}
                           className={cn(
-                            "group relative rounded-2xl p-4 flex items-center gap-4 border transition-all duration-300",
+                            "group relative rounded-2xl p-3 flex items-center gap-3 border transition-all duration-300 backdrop-blur-md",
                             isDarkMode 
                               ? "bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/[0.08]" 
-                              : "bg-white border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200"
+                              : "bg-white/80 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200"
                           )}
                         >
                           <div className={cn(
-                            "w-12 h-12 rounded-xl flex items-center justify-center shrink-0",
-                            isDarkMode ? "bg-white/5" : "bg-gray-100"
+                            "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
+                            isDarkMode ? "bg-white/10" : "bg-gray-100"
                           )}>
-                            {item.status === 'completed' ? <CheckCircle2 className="w-6 h-6 text-emerald-400" /> :
-                             item.status === 'processing' ? <Loader2 className="w-6 h-6 text-cyan-400 animate-spin" /> :
-                             item.status === 'error' ? <AlertCircle className="w-6 h-6 text-red-400" /> :
-                             <FileIcon className="w-6 h-6 text-gray-400" />}
+                            {item.status === 'completed' ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> :
+                             item.status === 'processing' ? <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" /> :
+                             item.status === 'error' ? <AlertCircle className="w-5 h-5 text-red-500" /> :
+                             getFileIcon(item.file.name)}
                           </div>
                           
-                          <div className="flex-1 min-w-0 pr-8">
-                            <h4 className="text-sm font-bold truncate">{item.file.name}</h4>
-                            <p className="text-[10px] text-gray-500 font-mono mt-0.5">{formatBytes(item.file.size)}</p>
+                          <div className="flex-1 min-w-0 pr-6">
+                            <h4 className="text-xs font-bold truncate tracking-tight">{item.file.name}</h4>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <p className="text-[10px] text-gray-500 font-mono">{formatBytes(item.file.size)}</p>
+                              {item.compressedSize && (
+                                <>
+                                  <div className="w-1 h-1 rounded-full bg-gray-600" />
+                                  <p className="text-[10px] text-emerald-500 font-bold">
+                                    {(100 - (item.compressedSize / item.file.size) * 100).toFixed(0)}% Read
+                                  </p>
+                                </>
+                              )}
+                            </div>
                           </div>
 
                           {!isProcessing && (
-                            <button 
-                              onClick={() => removeFile(item.id)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-all hover:bg-red-500/10 text-red-400"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                              {mode === 'extract' && (
+                                <button
+                                  onClick={() => handlePreview(item)}
+                                  className="p-2 rounded-lg hover:bg-cyan-500/10 text-cyan-400"
+                                  title="Quick Look (Cmd+O)"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                              )}
+                              <button 
+                                onClick={() => removeFile(item.id)}
+                                className="p-2 rounded-lg hover:bg-red-500/10 text-red-400"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           )}
                         </motion.div>
                       ))}
@@ -443,15 +802,26 @@ export default function App() {
                 </AnimatePresence>
               </div>
 
-              <div className="lg:col-span-12 xl:col-span-4">
-                <div className="flex flex-col gap-6 lg:sticky lg:top-24">
+              <div className={cn(
+                "lg:col-span-12 xl:col-span-4",
+                "fixed inset-0 z-[60] xl:relative xl:inset-auto transition-transform duration-500 xl:translate-y-0 xl:opacity-100",
+                isConfigOpen ? "translate-y-0 opacity-100" : "translate-y-full opacity-0 pointer-events-none xl:pointer-events-auto"
+              )}>
+                <div className={cn(
+                  "flex flex-col gap-6 h-full xl:h-auto xl:sticky xl:top-24 p-6 xl:p-0 overflow-y-auto xl:overflow-visible custom-scrollbar",
+                  isDarkMode ? "bg-[#050507] xl:bg-transparent" : "bg-white xl:bg-transparent"
+                )}>
+                  <div className="flex xl:hidden items-center justify-between mb-2">
+                    <h2 className="font-bold text-xl">Archive Settings</h2>
+                    <button onClick={() => setIsConfigOpen(false)} className="p-2 bg-white/5 rounded-xl"><X className="w-6 h-6" /></button>
+                  </div>
                   
                   <motion.div 
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     className={cn(
-                      "rounded-3xl p-6 flex flex-col gap-8 border shadow-2xl relative overflow-hidden",
-                      isDarkMode ? "bg-white/[0.02] border-white/10" : "bg-white border-gray-100"
+                      "rounded-3xl p-6 flex flex-col gap-6 border shadow-2xl relative overflow-hidden backdrop-blur-xl transition-all duration-500",
+                      isDarkMode ? "bg-[#0a0a0c]/40 border-white/10" : "bg-white/40 border-gray-100"
                     )}
                   >
                     <div className="flex items-center gap-3">
@@ -488,6 +858,33 @@ export default function App() {
                         </div>
 
                         <div className="space-y-3">
+                          <label className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center justify-between">
+                            Advanced Engine Settings
+                          </label>
+                          <div className="p-4 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-white/10 transition-colors">
+                            <div className="flex items-center gap-3">
+                              <ArchiveIcon className="w-4 h-4 text-cyan-500" />
+                              <div>
+                                <p className="text-xs font-bold">Zip64 Extension</p>
+                                <p className="text-[9px] text-gray-500 font-mono uppercase">Support for {'>'} 4GB</p>
+                              </div>
+                            </div>
+                            <button 
+                              onClick={() => setZip64(!zip64)}
+                              className={cn(
+                                "w-10 h-5 rounded-full transition-all relative",
+                                zip64 ? "bg-cyan-500 ring-2 ring-cyan-500/20" : "bg-gray-700"
+                              )}
+                            >
+                              <div className={cn(
+                                "absolute top-1 w-3 h-3 rounded-full bg-white transition-all shadow-sm",
+                                zip64 ? "right-1" : "left-1"
+                              )} />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-3">
                           <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Archive Name</label>
                           <input 
                             type="text" 
@@ -506,25 +903,52 @@ export default function App() {
                           <label className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
                             <Lock className="w-3.5 h-3.5" /> Password
                           </label>
-                          <input 
-                            type="password" 
-                            disabled={isProcessing}
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            className={cn(
-                              "w-full rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/30 transition-all border",
-                              isDarkMode ? "bg-white/5 border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
-                            )}
-                            placeholder="Optional"
-                          />
+                          <div className="relative group/pass">
+                            <input 
+                              type={showPassword ? "text" : "password"} 
+                              disabled={isProcessing}
+                              value={password}
+                              onChange={(e) => setPassword(e.target.value)}
+                              className={cn(
+                                "w-full rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/30 transition-all border pr-14 shadow-inner",
+                                isDarkMode ? "bg-white/5 border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                              )}
+                              placeholder="Optional"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPassword(!showPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl text-gray-500 hover:text-cyan-500 transition-colors bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/10"
+                            >
+                              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                            </button>
+                          </div>
+                          {password && (
+                            <div className="flex bg-white/5 rounded-xl p-1 gap-1 border border-white/5">
+                              {(['zipCrypto', 'aes'] as const).map(m => (
+                                <button
+                                  key={m}
+                                  onClick={() => setEncryptionMethod(m)}
+                                  className={cn(
+                                    "flex-1 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all",
+                                    encryptionMethod === m 
+                                      ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" 
+                                      : "text-gray-500 hover:bg-white/5"
+                                  )}
+                                >
+                                  {m === 'aes' ? 'AES-256 (Secure)' : 'ZipCrypto (Legacy)'}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ) : (
                       <div className={cn(
-                        "p-5 rounded-3xl border text-xs text-gray-500 leading-relaxed",
-                        isDarkMode ? "bg-cyan-500/5 border-cyan-500/10" : "bg-cyan-50 border-cyan-100 shadow-inner"
+                        "p-5 rounded-3xl border text-[11px] text-gray-500 font-medium leading-relaxed backdrop-blur-md",
+                        isDarkMode ? "bg-cyan-500/10 border-cyan-500/20 shadow-[inset_0_0_20px_rgba(6,182,212,0.05)]" : "bg-cyan-50/60 border-cyan-200/50"
                       )}>
-                        Advanced extraction powered by LibArchive WebAssembly. Supports ZIP, RAR, 7Z, and more.
+                        Advanced batch extraction powered by LibArchive WebAssembly. Supports ZIP, RAR, 7Z, and more. Files are processed sequentially for maximum reliability.
                       </div>
                     )}
 
@@ -678,6 +1102,24 @@ export default function App() {
                     <h4 className="font-bold text-white mb-2">Security</h4>
                     <p className="text-sm text-gray-400">VoxZip supports password-protected ZIP archives using standard ZipCrypto or AES encryption (browser capability depending).</p>
                   </div>
+
+                  <div className="p-6 rounded-2xl bg-cyan-500/10 border border-cyan-500/20">
+                    <div className="flex items-center gap-3 mb-3">
+                      <Download className="w-5 h-5 text-cyan-500" />
+                      <h4 className="font-bold text-white">Standalone Experience</h4>
+                    </div>
+                    <p className="text-sm text-gray-400 leading-relaxed mb-4">You can install VoxZip as a standalone app on your device for a native-like experience and offline capabilities.</p>
+                    <div className="space-y-3">
+                      <div className="flex items-start gap-2">
+                        <div className="w-5 h-5 rounded-full bg-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">1</div>
+                        <p className="text-xs text-gray-400"><strong>iOS:</strong> Tap 'Share' in Safari, then select 'Add to Home Screen'.</p>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        <div className="w-5 h-5 rounded-full bg-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">2</div>
+                        <p className="text-xs text-gray-400"><strong>Android/Chrome:</strong> Tap the three dots menu and select 'Install app'.</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </motion.div>
@@ -729,7 +1171,7 @@ export default function App() {
       </main>
 
       <footer className={cn(
-        "py-12 border-t px-6 transition-colors duration-500 mt-auto",
+        "py-12 pb-32 border-t px-6 transition-colors duration-500 mt-auto",
         isDarkMode ? "bg-black/50 border-white/5 text-gray-500" : "bg-white border-gray-100 text-gray-400"
       )}>
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-8">
@@ -756,6 +1198,278 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Mobile Bottom Navigation */}
+      <nav className={cn(
+        "fixed bottom-0 left-0 right-0 z-[100] xl:hidden border-t backdrop-blur-xl px-6 py-4 flex items-center justify-around transition-all duration-500",
+        isDarkMode ? "bg-black/40 border-white/5" : "bg-white/60 border-gray-100 shadow-2xl"
+      )}>
+        <button 
+          onClick={() => { setActiveView('home'); setIsConfigOpen(false); }}
+          className={cn(
+            "flex flex-col items-center gap-1.5 transition-all outline-none",
+            activeView === 'home' ? "text-cyan-400" : "text-gray-500"
+          )}
+        >
+          <Home className="w-5 h-5" />
+          <span className="text-[10px] font-bold uppercase tracking-wider">Home</span>
+        </button>
+        <button 
+          onClick={() => { setActiveView('info'); setIsConfigOpen(false); }}
+          className={cn(
+            "flex flex-col items-center gap-1.5 transition-all outline-none",
+            activeView === 'info' ? "text-cyan-400" : "text-gray-500"
+          )}
+        >
+          <Info className="w-5 h-5" />
+          <span className="text-[10px] font-bold uppercase tracking-wider">Info</span>
+        </button>
+        <button 
+          onClick={() => { setActiveView('about'); setIsConfigOpen(false); }}
+          className={cn(
+            "flex flex-col items-center gap-1.5 transition-all outline-none",
+            activeView === 'about' ? "text-cyan-400" : "text-gray-500"
+          )}
+        >
+          <LayoutGrid className="w-5 h-5" />
+          <span className="text-[10px] font-bold uppercase tracking-wider">About</span>
+        </button>
+      </nav>
+
+      <AnimatePresence>
+        {showAbout && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAbout(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className={cn(
+                "relative w-full max-w-md rounded-[2.5rem] border shadow-[0_40px_100px_rgba(0,0,0,0.5)] p-8 text-center",
+                isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="flex flex-col items-center gap-6">
+                <div className="w-20 h-20 rounded-[1.5rem] bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-xl shadow-cyan-500/20">
+                  <Zap className="w-10 h-10 text-white fill-white" />
+                </div>
+                
+                <div>
+                  <h3 className="text-3xl font-black tracking-tighter">VOXZIP</h3>
+                  <p className="text-[10px] font-mono font-bold text-cyan-500 uppercase tracking-widest mt-1">Version 2.2.0 • Pro Edition</p>
+                </div>
+
+                <p className="text-sm text-gray-500 leading-relaxed max-w-[280px] mx-auto">
+                  High-performance, secure, and purely client-side archiving for the modern web. Your data never leaves your machine.
+                </p>
+
+                <div className="w-full grid grid-cols-1 gap-2 pt-4">
+                  <button 
+                    onClick={() => { setShowAbout(false); setActiveView('privacy'); }}
+                    className="w-full py-3 rounded-2xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                    Privacy Policy
+                  </button>
+                  <a 
+                    href="https://github.com/Sachin-Sheth/VoxZip" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="w-full py-3 rounded-2xl bg-white/5 border border-white/5 hover:bg-white/10 transition-all text-xs font-bold flex items-center justify-center gap-2"
+                  >
+                    <Github className="w-4 h-4 text-cyan-500" />
+                    Source Code
+                  </a>
+                </div>
+
+                <div className="pt-8 flex flex-col items-center gap-2">
+                  <p className="text-[10px] text-gray-600 font-mono uppercase tracking-[0.3em]">Crafted by CodeTech</p>
+                  <div className="flex items-center gap-1.5 grayscale opacity-50">
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => setShowAbout(false)}
+                  className="absolute top-6 right-6 p-2 rounded-xl hover:bg-white/5 transition-all"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showHistory && (
+          <div className="fixed inset-0 z-[150] flex items-end sm:items-center justify-end p-4 pointer-events-none">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowHistory(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto"
+            />
+            <motion.div
+              initial={{ x: 400, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 400, opacity: 0 }}
+              className={cn(
+                "relative w-full max-w-md h-[85vh] sm:h-[600px] rounded-[2.5rem] border shadow-[0_40px_100px_rgba(0,0,0,0.5)] flex flex-col pointer-events-auto overflow-hidden",
+                isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="p-8 border-b border-white/5 flex items-center justify-between">
+                <div>
+                  <h3 className="font-black text-xl tracking-tighter">OPERATIONS HUB</h3>
+                  <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-widest leading-none mt-1">Transaction History</p>
+                </div>
+                <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-white/5 rounded-xl"><X className="w-5 h-5 text-gray-500" /></button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+                {history.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center p-8">
+                    <div className="w-16 h-16 rounded-3xl bg-white/5 flex items-center justify-center mb-4">
+                      <Briefcase className="w-8 h-8 text-gray-600" />
+                    </div>
+                    <p className="text-sm font-bold text-gray-400">Silence in the Hub</p>
+                    <p className="text-xs text-gray-600 mt-1">Completed tasks will be indexed here for your records.</p>
+                  </div>
+                ) : (
+                  history.map((op) => (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      key={op.id}
+                      className={cn(
+                        "p-4 rounded-2xl border transition-all duration-300",
+                        isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <div className={cn(
+                            "w-10 h-10 rounded-xl flex items-center justify-center",
+                            op.status === 'success' ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+                          )}>
+                            {op.type === 'compress' ? <ArchiveIcon className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
+                          </div>
+                          <div>
+                            <p className="text-xs font-bold truncate max-w-[150px]">{op.fileName}</p>
+                            <p className="text-[9px] text-gray-500 font-mono mt-0.5">
+                              {op.type.toUpperCase()} • {op.fileCount} ITEMS • {op.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </div>
+                        {op.status === 'success' ? (
+                          <div className="px-2 py-1 rounded-md bg-emerald-500/10 text-[9px] font-bold text-emerald-400 border border-emerald-500/20">COMPLETE</div>
+                        ) : (
+                          <div className="px-2 py-1 rounded-md bg-red-500/10 text-[9px] font-bold text-red-400 border border-red-500/20">FAILED</div>
+                        )}
+                      </div>
+                      {op.details && (
+                        <p className="mt-3 p-2 rounded-lg bg-black/40 text-[10px] font-mono text-red-300/80 leading-relaxed border border-red-500/10 italic">
+                          &gt; {op.details}
+                        </p>
+                      )}
+                    </motion.div>
+                  ))
+                )}
+              </div>
+
+              <div className="p-4 border-t border-white/5">
+                <button 
+                  onClick={() => setHistory([])}
+                  className="w-full py-3 rounded-2xl border border-white/5 hover:bg-white/5 transition-all text-[10px] font-black uppercase tracking-widest text-gray-500"
+                >
+                  Wipe Hub Data
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {previewFiles && (
+          <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setPreviewFiles(null)}
+              className="absolute inset-0 bg-black/80 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 30 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 30 }}
+              className={cn(
+                "relative w-full max-w-xl rounded-[2.5rem] border shadow-[0_30px_100px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col max-h-[75vh]",
+                isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="p-8 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-[1.2rem] bg-cyan-500/10 flex items-center justify-center">
+                    <LayoutGrid className="w-6 h-6 text-cyan-500" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-xl tracking-tighter">ARCHIVE PREVIEW</h3>
+                    <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-widest">{previewFiles.length} Object(s) Indexed</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setPreviewFiles(null)}
+                  className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-transparent hover:border-white/10"
+                >
+                  <X className="w-6 h-6 text-gray-500" />
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar">
+                {previewFiles.map((file, i) => (
+                  <motion.div 
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.03 }}
+                    key={i} 
+                    className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.03] border border-white/5 group hover:border-cyan-500/30 transition-all shadow-lg"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform">
+                        {getFileIcon(file.name)}
+                      </div>
+                      <span className="text-xs font-bold truncate max-w-[280px] tracking-tight">{file.name}</span>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold text-gray-500 bg-white/5 px-2 py-1 rounded-md">{formatBytes(file.size)}</span>
+                  </motion.div>
+                ))}
+              </div>
+              
+              <div className="p-8 border-t border-white/5 bg-white/[0.01] flex justify-between items-center">
+                <p className="text-[9px] font-mono text-gray-500 uppercase tracking-widest italic">End of Central Directory</p>
+                <button 
+                  onClick={() => setPreviewFiles(null)}
+                  className="px-8 py-3 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-black uppercase tracking-tighter shadow-[0_10px_30px_rgba(6,182,212,0.3)] hover:scale-105 active:scale-95 transition-all"
+                >
+                  Close Scanner
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <style>{`
         ::-webkit-scrollbar {
