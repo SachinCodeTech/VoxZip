@@ -51,6 +51,7 @@ interface FileItem {
   status: 'idle' | 'processing' | 'completed' | 'error';
   compressedSize?: number;
   errorMessage?: string;
+  dateAdded: number;
 }
 
 interface OperationSummary {
@@ -120,6 +121,16 @@ export default function App() {
   const [archiveName, setArchiveName] = useState('archive.zip');
   const [isNameModified, setIsNameModified] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [sortBy, setSortBy] = useState<'name' | 'size' | 'date'>('date');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [fileFilter, setFileFilter] = useState<'all' | 'images' | 'docs' | 'archives' | 'other'>('all');
+  const [showBatchRename, setShowBatchRename] = useState(false);
+  const [renamePrefix, setRenamePrefix] = useState('');
+  const [renameSuffix, setRenameSuffix] = useState('');
+  const [renameSearch, setRenameSearch] = useState('');
+  const [renameReplace, setRenameReplace] = useState('');
+  const [editingFileId, setEditingFileId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -216,15 +227,50 @@ export default function App() {
     e.stopPropagation();
     if (isProcessing) return;
     const droppedFiles = Array.from(e.dataTransfer.files) as File[];
+    
+    // Auto-detect extraction mode if archive files are dropped
+    const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'];
+    const hasArchive = droppedFiles.some(f => {
+      const ext = f.name.split('.').pop()?.toLowerCase();
+      return archiveExtensions.includes(ext || '');
+    });
+
+    if (hasArchive && mode === 'compress') {
+      setMode('extract');
+      setFiles([]); // Clear existing if switching to extraction
+    }
+
     addFiles(droppedFiles);
   }, [mode, isProcessing]);
+
+  const exportHistoryJSON = () => {
+    const blob = new Blob([JSON.stringify(history, null, 2)], { type: 'application/json' });
+    saveAs(blob, 'voxzip-history.json');
+  };
+
+  const exportHistoryCSV = () => {
+    const headers = ['ID', 'Type', 'Timestamp', 'Filename', 'Count', 'Status', 'Details'];
+    const rows = history.map(h => [
+      h.id,
+      h.type,
+      h.timestamp.toISOString(),
+      `"${h.fileName}"`,
+      h.fileCount,
+      h.status,
+      `"${h.details || ''}"`
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    saveAs(blob, 'voxzip-history.csv');
+  };
 
   const addFiles = (newFiles: File[]) => {
     const fileItems: FileItem[] = newFiles.map(f => ({
       id: Math.random().toString(36).substr(2, 9),
       file: f,
       progress: 0,
-      status: 'idle'
+      status: 'idle',
+      dateAdded: Date.now()
     }));
     setFiles(prev => [...prev, ...fileItems]);
   };
@@ -238,6 +284,88 @@ export default function App() {
     setIsNameModified(false);
     setArchiveName('archive.zip');
   };
+
+  const getSortedFiles = () => {
+    let filtered = [...files];
+    
+    if (fileFilter !== 'all') {
+      filtered = filtered.filter(item => {
+        const ext = item.file.name.split('.').pop()?.toLowerCase();
+        if (fileFilter === 'images') return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext || '');
+        if (fileFilter === 'docs') return ['pdf', 'doc', 'docx', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext || '');
+        if (fileFilter === 'archives') return ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'].includes(ext || '');
+        if (fileFilter === 'other') {
+          const known = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'pdf', 'doc', 'docx', 'txt', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'];
+          return !known.includes(ext || '');
+        }
+        return true;
+      });
+    }
+
+    return filtered.sort((a, b) => {
+      let comparison = 0;
+      if (sortBy === 'name') {
+        comparison = a.file.name.localeCompare(b.file.name);
+      } else if (sortBy === 'size') {
+        comparison = a.file.size - b.file.size;
+      } else if (sortBy === 'date') {
+        comparison = a.dateAdded - b.dateAdded;
+      }
+      return sortOrder === 'asc' ? comparison : -comparison;
+    });
+  };
+
+  const handleBatchRename = () => {
+    setFiles(prev => prev.map(item => {
+      let newName = item.file.name;
+      const lastDot = newName.lastIndexOf('.');
+      const nameWithoutExt = lastDot !== -1 ? newName.substring(0, lastDot) : newName;
+      const ext = lastDot !== -1 ? newName.substring(lastDot) : '';
+
+      let processedName = nameWithoutExt;
+
+      if (renameSearch) {
+        processedName = processedName.replaceAll(renameSearch, renameReplace);
+      }
+      
+      processedName = `${renamePrefix}${processedName}${renameSuffix}`;
+      
+      const newFile = new File([item.file], `${processedName}${ext}`, { type: item.file.type });
+      return { ...item, file: newFile };
+    }));
+    setShowBatchRename(false);
+    setRenamePrefix('');
+    setRenameSuffix('');
+    setRenameSearch('');
+    setRenameReplace('');
+  };
+
+  const handleSingleRename = (id: string) => {
+    const item = files.find(f => f.id === id);
+    if (!item) return;
+
+    const lastDot = item.file.name.lastIndexOf('.');
+    const ext = lastDot !== -1 ? item.file.name.substring(lastDot) : '';
+    const newFile = new File([item.file], `${editName}${ext}`, { type: item.file.type });
+    
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, file: newFile } : f));
+    setEditingFileId(null);
+  };
+
+  const getPasswordStrength = (pass: string) => {
+    if (!pass) return null;
+    if (pass.length < 6) return { label: 'Weak', color: 'text-red-500', bg: 'bg-red-500' };
+    const hasLetters = /[a-zA-Z]/.test(pass);
+    const hasNumbers = /[0-9]/.test(pass);
+    const hasSymbols = /[^a-zA-Z0-9]/.test(pass);
+    const strength = [hasLetters, hasNumbers, hasSymbols].filter(Boolean).length;
+    
+    if (pass.length >= 10 && strength === 3) return { label: 'Strong', color: 'text-emerald-500', bg: 'bg-emerald-500' };
+    if (pass.length >= 8 && strength >= 2) return { label: 'Medium', color: 'text-amber-500', bg: 'bg-amber-500' };
+    return { label: 'Weak', color: 'text-red-500', bg: 'bg-red-500' };
+  };
+
+  const strength = getPasswordStrength(password);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -606,6 +734,7 @@ export default function App() {
           
           <button 
             onClick={() => setActiveView(activeView === 'info' ? 'home' : 'info')}
+            title="App Information & Help"
             className={cn(
               "p-2 rounded-xl transition-all duration-300 border hidden lg:flex",
               activeView === 'info' 
@@ -632,6 +761,7 @@ export default function App() {
 
           <button 
             onClick={() => setIsDarkMode(!isDarkMode)}
+            title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             className={cn(
               "p-2.5 rounded-xl transition-all duration-300 border hover:shadow-lg",
               isDarkMode 
@@ -645,7 +775,106 @@ export default function App() {
       </header>
 
       <main className="relative pt-24 pb-20 px-4 max-w-5xl mx-auto">
-        <AnimatePresence mode="wait">
+        {/* Batch Rename Modal */}
+      <AnimatePresence>
+        {showBatchRename && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowBatchRename(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className={cn(
+                "relative w-full max-w-lg rounded-[2.5rem] border p-8 shadow-2xl flex flex-col gap-6",
+                isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+                    <FileIcon className="w-5 h-5 text-cyan-500" />
+                  </div>
+                  <div>
+                    <h2 className="font-black text-xl tracking-tighter uppercase">Batch Rename</h2>
+                    <p className="text-[10px] text-gray-500 font-mono uppercase tracking-[0.2em] font-bold">Transformation Tools</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowBatchRename(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Prefix</label>
+                  <input 
+                    value={renamePrefix}
+                    onChange={(e) => setRenamePrefix(e.target.value)}
+                    className={cn(
+                      "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                      isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                    )}
+                    placeholder="v1_"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Suffix</label>
+                  <input 
+                    value={renameSuffix}
+                    onChange={(e) => setRenameSuffix(e.target.value)}
+                    className={cn(
+                      "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                      isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                    )}
+                    placeholder="_final"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Find & Replace</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input 
+                      value={renameSearch}
+                      onChange={(e) => setRenameSearch(e.target.value)}
+                      className={cn(
+                        "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                        isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                      )}
+                      placeholder="Search"
+                    />
+                    <input 
+                      value={renameReplace}
+                      onChange={(e) => setRenameReplace(e.target.value)}
+                      className={cn(
+                        "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                        isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                      )}
+                      placeholder="Replace"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <button 
+                onClick={handleBatchRename}
+                className="w-full py-4 mt-2 rounded-2xl bg-cyan-500 text-white font-black text-xs uppercase tracking-[0.2em] shadow-lg shadow-cyan-500/30 hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                Apply Transformation
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence mode="wait">
           {activeView === 'home' ? (
             <motion.div 
               key="home"
@@ -687,13 +916,69 @@ export default function App() {
                   </div>
 
                   {files.length > 0 && (
-                    <button 
-                      onClick={clearFiles}
-                      className="text-xs font-semibold text-red-500 hover:text-red-400 transition-colors flex items-center gap-1.5 bg-red-500/10 px-4 py-2 rounded-xl"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      Clear All
-                    </button>
+                    <div className="flex flex-col gap-3 w-full">
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                           <div className={cn(
+                            "flex items-center gap-1 p-1 rounded-xl border",
+                            isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
+                          )}>
+                            {(['date', 'name', 'size'] as const).map(s => (
+                              <button 
+                                key={s}
+                                onClick={() => {
+                                  if (sortBy === s) setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                                  else setSortBy(s);
+                                }}
+                                title={`Sort by ${s}`}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all",
+                                  sortBy === s ? "bg-cyan-500 text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
+                                )}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+
+                          <button 
+                            onClick={() => setShowBatchRename(true)}
+                            title="Batch Rename Files"
+                            className="text-[10px] font-black text-cyan-500 hover:text-cyan-400 transition-colors uppercase tracking-widest bg-cyan-500/10 px-4 py-2.5 rounded-xl border border-cyan-500/20"
+                          >
+                            Batch Rename
+                          </button>
+
+                          <button 
+                            onClick={clearFiles}
+                            title="Clear All Files"
+                            className="text-[10px] font-black text-red-500 hover:text-red-400 transition-colors uppercase tracking-widest bg-red-500/10 px-4 py-2.5 rounded-xl border border-red-500/20"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 mr-1" />
+                            Clear
+                          </button>
+                        </div>
+
+                        <div className={cn(
+                          "flex items-center gap-1 p-1 rounded-xl border",
+                          isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
+                        )}>
+                          {(['all', 'images', 'docs', 'archives', 'other'] as const).map(f => (
+                            <button
+                               key={f}
+                               onClick={() => setFileFilter(f)}
+                               title={`Filter by ${f}`}
+                               className={cn(
+                                 "px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-tighter transition-all",
+                                 fileFilter === f ? "bg-purple-500 text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
+                               )}
+                            >
+                              {f}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
 
@@ -756,7 +1041,7 @@ export default function App() {
                       exit={{ opacity: 0, scale: 0.95 }}
                       className="grid grid-cols-1 md:grid-cols-2 gap-4"
                     >
-                      {files.map(item => (
+                      {getSortedFiles().map(item => (
                         <motion.div 
                           layout
                           key={item.id}
@@ -780,8 +1065,29 @@ export default function App() {
                              getFileIcon(item.file.name)}
                           </div>
                           
-                          <div className="flex-1 min-w-0">
-                            <h4 className="text-[11px] font-black truncate tracking-tight">{item.file.name}</h4>
+                          <div className="flex-1 min-w-0 group-hover:pr-10 transition-all duration-300">
+                            {editingFileId === item.id ? (
+                              <input 
+                                autoFocus
+                                value={editName}
+                                onChange={(e) => setEditName(e.target.value)}
+                                onBlur={() => handleSingleRename(item.id)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSingleRename(item.id)}
+                                className="w-full bg-cyan-500/20 border border-cyan-500/30 rounded px-2 py-0.5 text-[11px] font-black text-white focus:outline-none"
+                              />
+                            ) : (
+                              <h4 
+                                onDoubleClick={() => {
+                                  setEditingFileId(item.id);
+                                  const name = item.file.name;
+                                  const lastDot = name.lastIndexOf('.');
+                                  setEditName(lastDot !== -1 ? name.substring(0, lastDot) : name);
+                                }}
+                                className="text-[11px] font-black truncate tracking-tight cursor-text hover:text-cyan-400 transition-colors"
+                              >
+                                {item.file.name}
+                              </h4>
+                            )}
                             <div className="flex items-center gap-1.5 mt-0.5">
                               <p className="text-[9px] text-gray-500 font-mono font-bold uppercase">{formatBytes(item.file.size)}</p>
                               {item.compressedSize && (
@@ -796,21 +1102,22 @@ export default function App() {
                           </div>
 
                           {!isProcessing && (
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all">
+                            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 translate-x-4 group-hover:translate-x-0 transition-all duration-300">
                               {mode === 'extract' && (
                                 <button
                                   onClick={() => handlePreview(item)}
-                                  className="p-2 rounded-lg hover:bg-cyan-500/10 text-cyan-400"
-                                  title="Quick Look (Cmd+O)"
+                                  className="p-1.5 rounded-lg hover:bg-cyan-500/10 text-cyan-400 transition-colors"
+                                  title="Quick Look Picker"
                                 >
-                                  <Eye className="w-4 h-4" />
+                                  <Eye className="w-3.5 h-3.5" />
                                 </button>
                               )}
                               <button 
                                 onClick={() => removeFile(item.id)}
-                                className="p-2 rounded-lg hover:bg-red-500/10 text-red-400"
+                                title="Remove File From List"
+                                className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors"
                               >
-                                <Trash2 className="w-4 h-4" />
+                                <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
                           )}
@@ -905,26 +1212,47 @@ export default function App() {
                         </div>
 
                         <div className="space-y-2.5">
-                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Archive ID</label>
-                          <input 
-                            type="text" 
-                            disabled={isProcessing}
-                            value={archiveName}
-                            onChange={(e) => {
-                              setArchiveName(e.target.value);
-                              setIsNameModified(true);
-                            }}
-                            className={cn(
-                              "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
-                              isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                            <span>Archive ID</span>
+                            {password && (
+                              <div className="flex items-center gap-1 text-emerald-500 animate-pulse">
+                                <ShieldCheck className="w-3 h-3" />
+                                <span className="text-[8px] font-black tracking-tighter">SECURED</span>
+                              </div>
                             )}
-                            placeholder="NAME.ZIP"
-                          />
+                          </label>
+                          <div className="relative group">
+                             <input 
+                              type="text" 
+                              disabled={isProcessing}
+                              value={archiveName}
+                              onChange={(e) => {
+                                setArchiveName(e.target.value);
+                                setIsNameModified(true);
+                              }}
+                              className={cn(
+                                "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                                isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900",
+                                password && "pr-10 border-emerald-500/30"
+                              )}
+                              placeholder="NAME.ZIP"
+                            />
+                            {password && (
+                              <Lock className="absolute right-4 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-500" />
+                            )}
+                          </div>
                         </div>
 
                         <div className="space-y-2.5">
-                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center gap-2">
-                            <Lock className="w-3 h-3" /> SECURITY KEY
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                            <span className="flex items-center gap-2">
+                              <Lock className="w-3 h-3" /> SECURITY KEY
+                            </span>
+                            {strength && (
+                               <span className={cn("text-[9px] font-black uppercase tracking-tighter", strength.color)}>
+                                {strength.label}
+                               </span>
+                            )}
                           </label>
                           <div className="relative group/pass">
                             <input 
@@ -947,21 +1275,30 @@ export default function App() {
                             </button>
                           </div>
                           {password && (
-                            <div className="flex bg-white/5 rounded-xl p-1 gap-1 border border-white/5 mt-2">
-                              {(['zipCrypto', 'aes'] as const).map(m => (
-                                <button
-                                  key={m}
-                                  onClick={() => setEncryptionMethod(m)}
-                                  className={cn(
-                                    "flex-1 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter transition-all",
-                                    encryptionMethod === m 
-                                      ? "bg-cyan-500 text-white shadow-lg" 
-                                      : "text-gray-500 hover:bg-white/5"
-                                  )}
-                                >
-                                  {m === 'aes' ? 'AES-256' : 'LEGACY'}
-                                </button>
-                              ))}
+                            <div className="flex flex-col gap-2">
+                              <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                                <motion.div 
+                                  initial={{ width: 0 }}
+                                  animate={{ width: strength?.label === 'Strong' ? '100%' : strength?.label === 'Medium' ? '66%' : '33%' }}
+                                  className={cn("h-full transition-all duration-500", strength?.bg)}
+                                />
+                              </div>
+                              <div className="flex bg-white/5 rounded-xl p-1 gap-1 border border-white/5 mt-1">
+                                {(['zipCrypto', 'aes'] as const).map(m => (
+                                  <button
+                                    key={m}
+                                    onClick={() => setEncryptionMethod(m)}
+                                    className={cn(
+                                      "flex-1 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter transition-all",
+                                      encryptionMethod === m 
+                                        ? "bg-cyan-500 text-white shadow-lg" 
+                                        : "text-gray-500 hover:bg-white/5"
+                                    )}
+                                  >
+                                    {m === 'aes' ? 'AES-256' : 'LEGACY'}
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -1412,7 +1749,23 @@ export default function App() {
                 )}
               </div>
 
-              <div className="p-4 border-t border-white/5">
+              <div className="p-4 border-t border-white/5 space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <button 
+                    disabled={history.length === 0}
+                    onClick={exportHistoryCSV}
+                    className="flex-1 py-3 rounded-2xl border border-white/5 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-[9px] font-black uppercase tracking-widest text-emerald-500"
+                  >
+                    Export CSV
+                  </button>
+                  <button 
+                    disabled={history.length === 0}
+                    onClick={exportHistoryJSON}
+                    className="flex-1 py-3 rounded-2xl border border-white/5 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-[9px] font-black uppercase tracking-widest text-cyan-500"
+                  >
+                    Export JSON
+                  </button>
+                </div>
                 <button 
                   onClick={() => setHistory([])}
                   className="w-full py-3 rounded-2xl border border-white/5 hover:bg-white/5 transition-all text-[10px] font-black uppercase tracking-widest text-gray-500"
