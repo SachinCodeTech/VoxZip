@@ -9,13 +9,6 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/svg+xml" href="https://cdn.jsdelivr.net/gh/lucide-react/lucide@latest/icons/zap.svg" />
     <title>VoxZip - Browser Archiver</title>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
-        });
-      }
-    </script>
   </head>
   <body>
     <div id="root"></div>
