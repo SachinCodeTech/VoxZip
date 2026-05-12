@@ -118,11 +118,28 @@ export default function App() {
   const [zip64, setZip64] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [archiveName, setArchiveName] = useState('archive.zip');
+  const [isNameModified, setIsNameModified] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
+
+  useEffect(() => {
+    if (mode === 'compress' && !isNameModified && !isProcessing) {
+      if (files.length === 1) {
+        const name = files[0].file.name;
+        const lastDot = name.lastIndexOf('.');
+        const baseName = lastDot !== -1 ? name.substring(0, lastDot) : name;
+        setArchiveName(`${baseName}.zip`);
+      } else if (files.length > 1) {
+        setArchiveName('archive.zip');
+      } else if (files.length === 0) {
+        setArchiveName('archive.zip');
+        setIsNameModified(false);
+      }
+    }
+  }, [files, mode, isNameModified, isProcessing]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -216,7 +233,11 @@ export default function App() {
     setFiles(prev => prev.filter(f => f.id !== id));
   };
 
-  const clearFiles = () => setFiles([]);
+  const clearFiles = () => {
+    setFiles([]);
+    setIsNameModified(false);
+    setArchiveName('archive.zip');
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -528,46 +549,46 @@ export default function App() {
       </div>
 
       <header className={cn(
-        "fixed top-0 w-full z-50 border-b px-6 py-4 flex items-center justify-between backdrop-blur-xl transition-all duration-500",
-        isDarkMode ? "bg-[#0a0a0c]/80 border-white/10" : "bg-white/80 border-gray-200 shadow-sm"
+        "fixed top-0 w-full z-50 border-b px-4 py-3 flex items-center justify-between backdrop-blur-xl transition-all duration-500",
+        isDarkMode ? "bg-[#050507]/80 border-white/10" : "bg-white/80 border-gray-200 shadow-sm"
       )}>
-        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveView('home')}>
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <Zap className="w-6 h-6 text-white fill-white" />
+        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => setActiveView('home')}>
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+            <Zap className="w-5 h-5 text-white fill-white" />
           </div>
           <div className="flex flex-col">
-            <h1 className="text-lg sm:text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
-              VoxZip
+            <h1 className="text-base sm:text-lg font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
+              VOXZIP
             </h1>
-            <p className="hidden sm:block text-[10px] text-gray-500 font-mono uppercase tracking-widest leading-none mt-1">High Performance Archiving</p>
+            <p className="hidden sm:block text-[8px] text-gray-500 font-mono uppercase tracking-[0.2em] leading-none mt-1">High Performance</p>
           </div>
         </div>
         
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {isInstallable && (
               <button 
                 onClick={handleInstallClick}
                 className={cn(
-                  "px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-tighter border transition-all duration-300 flex items-center gap-2",
+                  "px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-tighter border transition-all duration-300 flex items-center gap-1.5",
                   isDarkMode 
                     ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/20" 
                     : "bg-cyan-50 border-cyan-200 text-cyan-600 hover:bg-cyan-100"
                 )}
               >
-                <Download className="w-3.5 h-3.5" />
-                Install App
+                <Download className="w-3 h-3" />
+                Install
               </button>
             )}
             <button 
               onClick={() => setIsConfigOpen(!isConfigOpen)}
             className={cn(
-              "p-2 rounded-xl transition-all duration-300 border xl:hidden",
+              "p-2 rounded-lg transition-all duration-300 border xl:hidden",
               isConfigOpen 
                 ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
                 : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
             )}
           >
-            {isConfigOpen ? <X className="w-5 h-5" /> : <Settings2 className="w-5 h-5" />}
+            {isConfigOpen ? <X className="w-4 h-4" /> : <Settings2 className="w-4 h-4" />}
           </button>
 
           <button 
@@ -623,7 +644,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="relative pt-32 pb-24 px-6 max-w-6xl mx-auto">
+      <main className="relative pt-24 pb-20 px-4 max-w-5xl mx-auto">
         <AnimatePresence mode="wait">
           {activeView === 'home' ? (
             <motion.div 
@@ -677,16 +698,16 @@ export default function App() {
                 </div>
 
             <motion.div 
-              initial={{ opacity: 0, y: 20 }}
+              initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               onDragOver={onDragOver}
               onDrop={onDrop}
               onClick={() => !isProcessing && fileInputRef.current?.click()}
               className={cn(
-                "relative group h-64 rounded-3xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
+                "relative group h-48 rounded-[2rem] border-2 border-dashed flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
                 isDarkMode 
-                  ? "border-white/10 bg-white/[0.03] hover:border-cyan-500/50 hover:bg-cyan-500/[0.05]" 
-                  : "border-gray-200 bg-white/60 hover:border-cyan-500/50 hover:bg-cyan-50/50 shadow-sm",
+                  ? "border-white/10 bg-white/[0.02] hover:border-cyan-500/40 hover:bg-cyan-500/[0.04]" 
+                  : "border-gray-200 bg-white/40 hover:border-cyan-500/40 hover:bg-cyan-50 shadow-sm",
                 isProcessing && "opacity-50 pointer-events-none"
               )}
             >
@@ -699,23 +720,21 @@ export default function App() {
               />
               
               <div className={cn(
-                "w-16 h-16 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-6 transition-all duration-500 shadow-2xl",
-                isDarkMode ? "bg-white/10 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
+                "w-12 h-12 rounded-[1.2rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
+                isDarkMode ? "bg-white/5 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
               )}>
-                <Upload className="w-8 h-8 text-cyan-500" />
+                <Upload className="w-6 h-6 text-cyan-500" />
               </div>
               
-              <div className="text-center px-6">
+              <div className="text-center px-4">
                 <p className={cn(
-                  "text-lg font-bold tracking-tight",
+                  "text-base font-black tracking-tight",
                   isDarkMode ? "text-gray-200" : "text-gray-700"
                 )}>
-                  {mode === 'compress' ? 'Drop files to compress' : 'Drop archives to extract'}
+                  {mode === 'compress' ? 'DROP FILES TO PACK' : 'DROP TO EXTRACT'}
                 </p>
-                <p className="text-xs text-gray-500 mt-1 max-w-sm mx-auto font-medium">
-                  {mode === 'compress' 
-                    ? 'Add multiple files or folders. Secure AES-256 encryption available.' 
-                    : 'Batch extract .ZIP, .RAR, .7z and more. Sequential processing.'}
+                <p className="text-[10px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase">
+                  {(mode === 'compress' ? 'Multiple Files Supported' : 'Auto-Detection Active')}
                 </p>
               </div>
 
@@ -741,35 +760,35 @@ export default function App() {
                         <motion.div 
                           layout
                           key={item.id}
-                          initial={{ scale: 0.8, opacity: 0 }}
+                          initial={{ scale: 0.95, opacity: 0 }}
                           animate={{ scale: 1, opacity: 1 }}
-                          exit={{ scale: 0.8, opacity: 0 }}
+                          exit={{ scale: 0.95, opacity: 0 }}
                           className={cn(
-                            "group relative rounded-2xl p-3 flex items-center gap-3 border transition-all duration-300 backdrop-blur-md",
+                            "group relative rounded-2xl p-2.5 flex items-center gap-2.5 border transition-all duration-500 backdrop-blur-md overflow-hidden",
                             isDarkMode 
-                              ? "bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/[0.08]" 
-                              : "bg-white/80 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200"
+                              ? "bg-white/[0.03] border-white/5 hover:border-cyan-500/30 hover:bg-white/[0.05]" 
+                              : "bg-white/60 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200"
                           )}
                         >
                           <div className={cn(
-                            "w-10 h-10 rounded-xl flex items-center justify-center shrink-0",
-                            isDarkMode ? "bg-white/10" : "bg-gray-100"
+                            "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:scale-105",
+                            isDarkMode ? "bg-white/5 border border-white/5" : "bg-gray-100"
                           )}>
                             {item.status === 'completed' ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> :
-                             item.status === 'processing' ? <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" /> :
-                             item.status === 'error' ? <AlertCircle className="w-5 h-5 text-red-500" /> :
+                             item.status === 'processing' ? <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" /> :
+                             item.status === 'error' ? <AlertCircle className="w-4 h-4 text-red-500" /> :
                              getFileIcon(item.file.name)}
                           </div>
                           
-                          <div className="flex-1 min-w-0 pr-6">
-                            <h4 className="text-xs font-bold truncate tracking-tight">{item.file.name}</h4>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <p className="text-[10px] text-gray-500 font-mono">{formatBytes(item.file.size)}</p>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="text-[11px] font-black truncate tracking-tight">{item.file.name}</h4>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <p className="text-[9px] text-gray-500 font-mono font-bold uppercase">{formatBytes(item.file.size)}</p>
                               {item.compressedSize && (
                                 <>
-                                  <div className="w-1 h-1 rounded-full bg-gray-600" />
-                                  <p className="text-[10px] text-emerald-500 font-bold">
-                                    {(100 - (item.compressedSize / item.file.size) * 100).toFixed(0)}% Read
+                                  <div className="w-0.5 h-0.5 rounded-full bg-gray-600" />
+                                  <p className="text-[9px] text-cyan-500 font-black uppercase tracking-tighter">
+                                    {(100 - (item.compressedSize / item.file.size) * 100).toFixed(0)}% Savings
                                   </p>
                                 </>
                               )}
@@ -804,51 +823,52 @@ export default function App() {
 
               <div className={cn(
                 "lg:col-span-12 xl:col-span-4",
-                "fixed inset-0 z-[60] xl:relative xl:inset-auto transition-transform duration-500 xl:translate-y-0 xl:opacity-100",
-                isConfigOpen ? "translate-y-0 opacity-100" : "translate-y-full opacity-0 pointer-events-none xl:pointer-events-auto"
+                "fixed inset-0 z-[100] xl:relative xl:inset-auto transition-all duration-500 xl:translate-y-0 xl:opacity-100",
+                isConfigOpen ? "translate-y-0 opacity-100 visible" : "translate-y-full opacity-0 invisible xl:visible xl:opacity-100 xl:translate-y-0"
               )}>
                 <div className={cn(
-                  "flex flex-col gap-6 h-full xl:h-auto xl:sticky xl:top-24 p-6 xl:p-0 overflow-y-auto xl:overflow-visible custom-scrollbar",
+                  "flex flex-col gap-5 h-full xl:h-auto xl:sticky xl:top-24 p-4 xl:p-0",
                   isDarkMode ? "bg-[#050507] xl:bg-transparent" : "bg-white xl:bg-transparent"
                 )}>
                   <div className="flex xl:hidden items-center justify-between mb-2">
-                    <h2 className="font-bold text-xl">Archive Settings</h2>
-                    <button onClick={() => setIsConfigOpen(false)} className="p-2 bg-white/5 rounded-xl"><X className="w-6 h-6" /></button>
+                    <h2 className="font-black text-xl tracking-tighter">CONFIGURATION</h2>
+                    <button onClick={() => setIsConfigOpen(false)} className="p-2 border border-white/10 rounded-xl"><X className="w-6 h-6" /></button>
                   </div>
                   
-                  <motion.div 
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className={cn(
-                      "rounded-3xl p-6 flex flex-col gap-6 border shadow-2xl relative overflow-hidden backdrop-blur-xl transition-all duration-500",
-                      isDarkMode ? "bg-[#0a0a0c]/40 border-white/10" : "bg-white/40 border-gray-100"
-                    )}
-                  >
+                  <div className="flex-1 overflow-y-auto custom-scrollbar xl:overflow-visible">
+                    <motion.div 
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className={cn(
+                        "rounded-[2.5rem] p-5 flex flex-col gap-5 border shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] relative overflow-visible backdrop-blur-2xl transition-all duration-500",
+                        isDarkMode ? "bg-white/[0.03] border-white/10" : "bg-white/60 border-gray-100"
+                      )}
+                    >
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
-                        <Settings2 className="w-5 h-5 text-cyan-500" />
+                      <div className="w-9 h-9 rounded-xl bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+                        <Settings2 className="w-4 h-4 text-cyan-500" />
                       </div>
                       <div>
-                        <h2 className="font-bold text-lg tracking-tight">Configuration</h2>
-                        <p className="text-[10px] text-gray-500 font-mono uppercase">Output Options</p>
+                        <h2 className="font-black text-base tracking-tighter uppercase">Config</h2>
+                        <p className="text-[9px] text-gray-500 font-mono uppercase tracking-[0.2em] font-bold">Parameters</p>
                       </div>
                     </div>
 
                     {mode === 'compress' ? (
-                      <div className="space-y-6">
-                        <div className="space-y-3">
-                          <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Compression Level</label>
-                          <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-5">
+                        <div className="space-y-2.5">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Compression Engine</label>
+                          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white/5 border border-white/5">
                             {(['fast', 'normal', 'ultra'] as const).map(l => (
                               <button
                                 key={l}
                                 disabled={isProcessing}
                                 onClick={() => setLevel(l)}
                                 className={cn(
-                                  "py-2.5 rounded-xl text-xs font-bold border capitalize transition-all duration-300",
+                                  "py-2 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all duration-300",
                                   level === l 
-                                    ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 shadow-inner" 
-                                    : (isDarkMode ? "bg-white/5 border-transparent text-gray-500 hover:bg-white/10" : "bg-gray-100 border-transparent text-gray-500 hover:bg-gray-200")
+                                    ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" 
+                                    : (isDarkMode ? "text-gray-500 hover:bg-white/5" : "bg-gray-100 border-transparent text-gray-500 hover:bg-gray-200")
                                 )}
                               >
                                 {l}
@@ -857,51 +877,54 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="space-y-3">
-                          <label className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center justify-between">
-                            Advanced Engine Settings
+                        <div className="space-y-2.5">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                            Advanced Bridge
                           </label>
-                          <div className="p-4 rounded-2xl bg-white/5 border border-white/5 flex items-center justify-between group hover:border-white/10 transition-colors">
+                          <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
                             <div className="flex items-center gap-3">
-                              <ArchiveIcon className="w-4 h-4 text-cyan-500" />
+                              <ShieldCheck className="w-4 h-4 text-cyan-500" />
                               <div>
-                                <p className="text-xs font-bold">Zip64 Extension</p>
-                                <p className="text-[9px] text-gray-500 font-mono uppercase">Support for {'>'} 4GB</p>
+                                <p className="text-[11px] font-black tracking-tight">ZIP64 LAYER</p>
+                                <p className="text-[8px] text-gray-500 font-mono uppercase font-bold tracking-tighter">&gt; 4GB Data Support</p>
                               </div>
                             </div>
                             <button 
                               onClick={() => setZip64(!zip64)}
                               className={cn(
-                                "w-10 h-5 rounded-full transition-all relative",
-                                zip64 ? "bg-cyan-500 ring-2 ring-cyan-500/20" : "bg-gray-700"
+                                "w-9 h-4.5 rounded-full transition-all relative overflow-hidden",
+                                zip64 ? "bg-cyan-500" : "bg-gray-800"
                               )}
                             >
                               <div className={cn(
-                                "absolute top-1 w-3 h-3 rounded-full bg-white transition-all shadow-sm",
-                                zip64 ? "right-1" : "left-1"
+                                "absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all shadow-sm",
+                                zip64 ? "right-0.5" : "left-0.5"
                               )} />
                             </button>
                           </div>
                         </div>
 
-                        <div className="space-y-3">
-                          <label className="text-xs font-bold text-gray-500 uppercase tracking-widest">Archive Name</label>
+                        <div className="space-y-2.5">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Archive ID</label>
                           <input 
                             type="text" 
                             disabled={isProcessing}
                             value={archiveName}
-                            onChange={(e) => setArchiveName(e.target.value)}
+                            onChange={(e) => {
+                              setArchiveName(e.target.value);
+                              setIsNameModified(true);
+                            }}
                             className={cn(
-                              "w-full rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-cyan-500/30 transition-all border",
-                              isDarkMode ? "bg-white/5 border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                              "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                              isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
                             )}
-                            placeholder="archive.zip"
+                            placeholder="NAME.ZIP"
                           />
                         </div>
 
-                        <div className="space-y-3">
-                          <label className="text-xs font-bold text-gray-500 uppercase tracking-widest flex items-center gap-2">
-                            <Lock className="w-3.5 h-3.5" /> Password
+                        <div className="space-y-2.5">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center gap-2">
+                            <Lock className="w-3 h-3" /> SECURITY KEY
                           </label>
                           <div className="relative group/pass">
                             <input 
@@ -910,33 +933,33 @@ export default function App() {
                               value={password}
                               onChange={(e) => setPassword(e.target.value)}
                               className={cn(
-                                "w-full rounded-2xl px-5 py-4 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/30 transition-all border pr-14 shadow-inner",
-                                isDarkMode ? "bg-white/5 border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                                "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border pr-12 shadow-inner",
+                                isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
                               )}
-                              placeholder="Optional"
+                              placeholder="ENCRYPTION PASSWORD"
                             />
                             <button
                               type="button"
                               onClick={() => setShowPassword(!showPassword)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-xl text-gray-500 hover:text-cyan-500 transition-colors bg-white/5 hover:bg-white/10 border border-transparent hover:border-white/10"
+                              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl text-gray-500 hover:text-cyan-500 transition-colors"
                             >
-                              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                             </button>
                           </div>
                           {password && (
-                            <div className="flex bg-white/5 rounded-xl p-1 gap-1 border border-white/5">
+                            <div className="flex bg-white/5 rounded-xl p-1 gap-1 border border-white/5 mt-2">
                               {(['zipCrypto', 'aes'] as const).map(m => (
                                 <button
                                   key={m}
                                   onClick={() => setEncryptionMethod(m)}
                                   className={cn(
-                                    "flex-1 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all",
+                                    "flex-1 py-1 rounded-lg text-[9px] font-black uppercase tracking-tighter transition-all",
                                     encryptionMethod === m 
-                                      ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" 
+                                      ? "bg-cyan-500 text-white shadow-lg" 
                                       : "text-gray-500 hover:bg-white/5"
                                   )}
                                 >
-                                  {m === 'aes' ? 'AES-256 (Secure)' : 'ZipCrypto (Legacy)'}
+                                  {m === 'aes' ? 'AES-256' : 'LEGACY'}
                                 </button>
                               ))}
                             </div>
@@ -945,10 +968,10 @@ export default function App() {
                       </div>
                     ) : (
                       <div className={cn(
-                        "p-5 rounded-3xl border text-[11px] text-gray-500 font-medium leading-relaxed backdrop-blur-md",
-                        isDarkMode ? "bg-cyan-500/10 border-cyan-500/20 shadow-[inset_0_0_20px_rgba(6,182,212,0.05)]" : "bg-cyan-50/60 border-cyan-200/50"
+                        "p-4 rounded-3xl border text-[10px] text-gray-500 font-bold leading-relaxed backdrop-blur-md italic font-mono",
+                        isDarkMode ? "bg-cyan-500/5 border-cyan-500/10 shadow-[inset_0_0_20px_rgba(6,182,212,0.02)]" : "bg-cyan-50/60 border-cyan-200/50"
                       )}>
-                        Advanced batch extraction powered by LibArchive WebAssembly. Supports ZIP, RAR, 7Z, and more. Files are processed sequentially for maximum reliability.
+                        // Batch extraction powered by LibArchive_WASM. Supports ZIP, RAR, 7Z. Sequential processing engaged.
                       </div>
                     )}
 
@@ -956,18 +979,19 @@ export default function App() {
                       disabled={files.length === 0 || isProcessing}
                       onClick={mode === 'compress' ? compressFiles : extractFiles}
                       className={cn(
-                        "w-full py-5 rounded-3xl font-black text-sm uppercase tracking-widest flex items-center justify-center gap-3 transition-all duration-500 shadow-2xl relative overflow-hidden",
+                        "w-full py-4 rounded-[1.5rem] font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2.5 transition-all duration-500 relative overflow-hidden group/btn",
                         files.length === 0 || isProcessing
-                          ? (isDarkMode ? "bg-white/5 text-gray-600 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
-                          : "bg-gradient-to-r from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.02] active:scale-95 shadow-cyan-500/20"
+                          ? (isDarkMode ? "bg-white/5 text-gray-700 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
+                          : "bg-gradient-to-r from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.02] active:scale-95 shadow-[0_20px_40px_-10px_rgba(6,182,212,0.3)]"
                       )}
                     >
                       {isProcessing ? (
-                         <Loader2 className="w-5 h-5 animate-spin" />
+                         <Loader2 className="w-4 h-4 animate-spin text-white" />
                       ) : (
                         <>
-                          {mode === 'compress' ? 'Assemble Archive' : 'Extract Files'}
-                          <ArrowRight className="w-5 h-5" />
+                          <span className="relative z-10">{mode === 'compress' ? 'GENERATE ARCHIVE' : 'EXTRACT DATA'}</span>
+                          <ArrowRight className="w-4 h-4 relative z-10 transition-transform group-hover/btn:translate-x-1" />
+                          <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
                         </>
                       )}
                     </button>
@@ -1004,7 +1028,8 @@ export default function App() {
                   </AnimatePresence>
                 </div>
               </div>
-            </motion.div>
+            </div>
+        </motion.div>
           ) : activeView === 'about' ? (
             <motion.div 
               key="about"
@@ -1201,38 +1226,38 @@ export default function App() {
 
       {/* Mobile Bottom Navigation */}
       <nav className={cn(
-        "fixed bottom-0 left-0 right-0 z-[100] xl:hidden border-t backdrop-blur-xl px-6 py-4 flex items-center justify-around transition-all duration-500",
-        isDarkMode ? "bg-black/40 border-white/5" : "bg-white/60 border-gray-100 shadow-2xl"
+        "fixed bottom-0 left-0 right-0 z-[120] xl:hidden border-t backdrop-blur-xl px-4 py-3 pb-6 flex items-center justify-around transition-all duration-500",
+        isDarkMode ? "bg-black/60 border-white/5" : "bg-white/60 border-gray-100 shadow-2xl"
       )}>
         <button 
           onClick={() => { setActiveView('home'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1.5 transition-all outline-none",
-            activeView === 'home' ? "text-cyan-400" : "text-gray-500"
+            "flex flex-col items-center gap-1 transition-all outline-none",
+            activeView === 'home' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
           )}
         >
           <Home className="w-5 h-5" />
-          <span className="text-[10px] font-bold uppercase tracking-wider">Home</span>
+          <span className="text-[9px] font-black uppercase tracking-tight">Home</span>
         </button>
         <button 
           onClick={() => { setActiveView('info'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1.5 transition-all outline-none",
-            activeView === 'info' ? "text-cyan-400" : "text-gray-500"
+            "flex flex-col items-center gap-1 transition-all outline-none",
+            activeView === 'info' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
           )}
         >
           <Info className="w-5 h-5" />
-          <span className="text-[10px] font-bold uppercase tracking-wider">Info</span>
+          <span className="text-[9px] font-black uppercase tracking-tight">Info</span>
         </button>
         <button 
           onClick={() => { setActiveView('about'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1.5 transition-all outline-none",
-            activeView === 'about' ? "text-cyan-400" : "text-gray-500"
+            "flex flex-col items-center gap-1 transition-all outline-none",
+            activeView === 'about' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
           )}
         >
           <LayoutGrid className="w-5 h-5" />
-          <span className="text-[10px] font-bold uppercase tracking-wider">About</span>
+          <span className="text-[9px] font-black uppercase tracking-tight">About</span>
         </button>
       </nav>
 
