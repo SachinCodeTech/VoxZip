@@ -32,13 +32,21 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Pin,
+  RotateCcw,
   Image as ImageIcon,
   Video,
   Music,
   Activity,
   Layers,
   Cpu,
-  RefreshCw
+  RefreshCw,
+  Command,
+  Search,
+  Sparkles,
+  Terminal,
+  History,
+  Zap as ZapIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { saveAs } from 'file-saver';
@@ -46,6 +54,7 @@ import { cn, formatBytes } from './lib/utils';
 import * as zip from '@zip.js/zip.js';
 // @ts-ignore
 import { Archive as LibArchive } from 'libarchive.js';
+import { historyService, type MatrixArchive } from './services/historyService';
 
 // Types
 interface FileItem {
@@ -68,6 +77,7 @@ interface OperationSummary {
   status: 'success' | 'failure';
   details?: string;
   hint?: string;
+  isCached?: boolean;
 }
 
 const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
@@ -253,16 +263,89 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('voxzip-theme') as Theme) || 'cyberpunk');
   const [searchQuery, setSearchQuery] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
+  const [recommendedLevel, setRecommendedLevel] = useState<CompressionLevel | null>(null);
+  const [cachedArchives, setCachedArchives] = useState<MatrixArchive[]>([]);
+  const [quickView, setQuickView] = useState<{name: string, content: string | null, type: 'image' | 'text'} | null>(null);
+
+  const handleQuickView = (item: FileItem) => {
+    const ext = item.file.name.split('.').pop()?.toLowerCase();
+    const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext || '');
+    const isText = ['txt', 'js', 'ts', 'tsx', 'css', 'html', 'json', 'md', 'env', 'config', 'yml', 'yaml'].includes(ext || '');
+
+    if (isImage) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setQuickView({ name: item.file.name, content: e.target?.result as string, type: 'image' });
+      };
+      reader.readAsDataURL(item.file);
+    } else if (isText) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setQuickView({ name: item.file.name, content: e.target?.result as string, type: 'text' });
+      };
+      reader.readAsText(item.file);
+    } else {
+      setQuickView({ 
+        name: item.file.name, 
+        content: `NAME: ${item.file.name}\nSIZE: ${formatBytes(item.file.size)}\nTYPE: ${item.file.type || 'application/octet-stream'}\nMODIFIED: ${new Date(item.file.lastModified).toISOString()}`, 
+        type: 'text' 
+      });
+    }
+  };
+
+  useEffect(() => {
+    loadMatrixHub();
+  }, []);
+
+  const loadMatrixHub = async () => {
+    const archives = await historyService.getAllArchives();
+    setCachedArchives(archives);
+  };
+
+  const reExtract = async (archive: MatrixArchive) => {
+    setIsReExtracting(true);
+    try {
+      for (const [name, blob] of Object.entries(archive.blobs)) {
+        saveAs(blob as Blob, name);
+      }
+    } catch (e) {
+      console.error('Re-extraction failed:', e);
+    } finally {
+      setIsReExtracting(false);
+    }
+  };
+
+  const deleteCachedArchive = async (id: string) => {
+    await historyService.deleteArchive(id);
+    await loadMatrixHub();
+    setHistory(prev => prev.map(h => h.id === id ? { ...h, isCached: false } : h));
+  };
+
+  const togglePinArchive = async (id: string) => {
+    await historyService.togglePin(id);
+    await loadMatrixHub();
+  };
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('voxzip-theme', theme);
   }, [theme]);
 
-  const isDarkMode = true; // VoxZip is essentially always dark-themed but with different accent color palettes
+  const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('voxzip-mode') !== 'light');
+  
+  useEffect(() => {
+    localStorage.setItem('voxzip-mode', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
+
   const [archiveName, setArchiveName] = useState('archive.zip');
   const [isNameModified, setIsNameModified] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [isReExtracting, setIsReExtracting] = useState(false);
   const [startTime, setStartTime] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [processedBytes, setProcessedBytes] = useState(0);
@@ -305,6 +388,30 @@ export default function App() {
     setUserPresets(prev => prev.filter(p => p.id !== id));
   };
 
+  const handleCommand = (id: string) => {
+    switch (id) {
+      case 'compress': setMode('compress'); break;
+      case 'extract': setMode('extract'); break;
+      case 'speed': applyOptimization('fast'); break;
+      case 'balanced': applyOptimization('normal'); break;
+      case 'maximum': applyOptimization('ultra'); break;
+      case 'history': setShowHistory(true); break;
+      case 'theme': {
+        const themes: Theme[] = ['cyberpunk', 'midnight', 'emerald', 'sunset'];
+        const next = themes[(themes.indexOf(theme) + 1) % themes.length];
+        setTheme(next);
+        break;
+      }
+      case 'wipe': {
+        if (confirm('Wipe all local hub data and history?')) {
+          setHistory([]);
+          historyService.clearAll().then(loadMatrixHub);
+        }
+        break;
+      }
+    }
+  };
+
   const applyOptimization = (opt: 'fast' | 'normal' | 'ultra') => {
     setLevel(opt);
     if (opt === 'fast') {
@@ -335,6 +442,101 @@ export default function App() {
       return next;
     });
   };
+
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [aiInsights, setAiInsights] = useState<{title: string, content: string, type: 'info' | 'warn' | 'success'}[]>([]);
+  const [showTopology, setShowTopology] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen(prev => !prev);
+      }
+      if (e.key === '/' && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '')) {
+        e.preventDefault();
+        setIsCommandPaletteOpen(true);
+      }
+      if (e.key === 'Escape') {
+        setIsCommandPaletteOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const runSmartAnalysis = useCallback(() => {
+    if (files.length === 0) {
+      setAiInsights([]);
+      return;
+    }
+
+    const insights: any[] = [];
+    const totalSize = files.reduce((acc, f) => acc + f.file.size, 0);
+    const hasMedia = files.some(f => {
+      const ext = f.file.name.split('.').pop()?.toLowerCase();
+      return ['mp4', 'mov', 'mp3', 'jpg', 'png'].includes(ext || '');
+    });
+    const hasLargeFiles = files.some(f => f.file.size > 100 * 1024 * 1024);
+
+    let recLevs: CompressionLevel = 'normal';
+    const textExts = ['txt', 'js', 'ts', 'tsx', 'json', 'md', 'css', 'html', 'xml', 'csv', 'env', 'yml', 'yaml', 'rs', 'go', 'py', 'java', 'cpp', 'h', 'c', 'sh', 'sql'];
+    const isTextIntensive = files.every(f => {
+      const ext = f.file.name.split('.').pop()?.toLowerCase();
+      return textExts.includes(ext || '') || f.file.size < 51200; // Text or small files (<50KB)
+    });
+
+    if (mode === 'compress') {
+      if (hasMedia) {
+        recLevs = 'fast';
+        insights.push({
+          title: 'Media Detected',
+          content: 'Media files are already compressed. Suggesting "Fast" optimization to save time.',
+          type: 'info'
+        });
+      } else if (isTextIntensive) {
+        recLevs = 'ultra';
+        insights.push({
+          title: 'Text Core Detected',
+          content: 'Payload consists of highly compressible data. "Maximum" optimization recommended for density.',
+          type: 'success'
+        });
+      } else if (totalSize > 200 * 1024 * 1024) {
+        recLevs = 'normal';
+      }
+
+      if (totalSize > 500 * 1024 * 1024) {
+        insights.push({
+          title: 'Quantum Load',
+          content: 'Large archive detected. Ensure system stability during matrix assembly.',
+          type: 'warn'
+        });
+      }
+      if (files.length > 50) {
+        insights.push({
+          title: 'High File Count',
+          content: 'Fragmentation detected. ZIP64 is mandatory for this operation.',
+          type: 'info'
+        });
+      }
+    } else {
+      const encrypted = password !== '';
+      if (!encrypted) {
+        insights.push({
+          title: 'Insecure Extraction',
+          content: 'No password provided. Ensure target environment is secure.',
+          type: 'warn'
+        });
+      }
+    }
+    
+    setRecommendedLevel(recLevs);
+    setAiInsights(insights);
+  }, [files, mode, password]);
+
+  useEffect(() => {
+    runSmartAnalysis();
+  }, [files, mode, password, runSmartAnalysis]);
 
   const toggleSelectAll = () => {
     if (selectedIds.size === files.length) {
@@ -813,6 +1015,10 @@ export default function App() {
     setProcessedBytes(0);
 
     try {
+      const extractedBlobs: Record<string, Blob> = {};
+      let totalExtractedSize = 0;
+      let totalFiles = 0;
+
       for (let archiveIdx = 0; archiveIdx < files.length; archiveIdx++) {
         const item = files[archiveIdx];
         setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'processing' } : f));
@@ -844,6 +1050,10 @@ export default function App() {
                       setFiles(prev => prev.map(f => f.id === item.id ? { ...f, progress: p } : f));
                     }
                   });
+
+                  extractedBlobs[entry.filename] = content;
+                  totalExtractedSize += content.size;
+                  totalFiles += 1;
 
                   if (targetHandle) {
                     const pathParts = entry.filename.split('/');
@@ -881,6 +1091,10 @@ export default function App() {
               for (const key in data) {
                 const innerItem = data[key];
                 if (innerItem instanceof File) {
+                  extractedBlobs[path + key] = innerItem;
+                  totalExtractedSize += innerItem.size;
+                  totalFiles += 1;
+
                   if (dirHandle) {
                     const fileHandle = await dirHandle.getFileHandle(key, { create: true });
                     const writable = await (fileHandle as any).createWritable();
@@ -910,14 +1124,29 @@ export default function App() {
 
       setOverallProgress(100);
       
+      const sessionName = files.length === 1 ? files[0].file.name : `${files.length} Archives`;
+      
       const summary: OperationSummary = {
         id: Math.random().toString(36).substr(2, 9),
         type: 'extract',
         timestamp: new Date(),
-        fileName: files.length === 1 ? files[0].file.name : `${files.length} Archives`,
+        fileName: sessionName,
         fileCount: files.length,
-        status: 'success'
+        status: 'success',
+        isCached: true
       };
+      
+      // Save to IndexedDB Hub for re-extraction
+      await historyService.saveArchive({
+        id: summary.id,
+        name: sessionName,
+        timestamp: Date.now(),
+        filesCount: totalFiles,
+        totalSize: totalExtractedSize,
+        blobs: extractedBlobs
+      });
+      
+      await loadMatrixHub();
       setHistory(prev => [summary, ...prev]);
 
       setTimeout(() => {
@@ -1162,128 +1391,228 @@ export default function App() {
       </div>
 
       <header className={cn(
-        "fixed top-0 w-full z-50 border-b px-4 py-3 flex items-center justify-between backdrop-blur-xl transition-all duration-500",
+        "fixed top-0 w-full z-50 border-b px-4 py-2 flex items-center justify-between backdrop-blur-xl transition-all duration-500",
         isDarkMode ? "bg-[#050507]/80 border-white/10" : "bg-white/80 border-gray-200 shadow-sm"
       )}>
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => setActiveView('home')}>
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
-            <Zap className="w-5 h-5 text-white fill-white" />
+        <div className="flex items-center gap-2.5 cursor-pointer group" onClick={() => setActiveView('home')}>
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center shadow-lg shadow-cyan-500/20 group-hover:scale-105 transition-transform">
+            <Zap className="w-4.5 h-4.5 text-white fill-white" />
           </div>
           <div className="flex flex-col">
             <div className="flex items-center gap-2">
               <h1 className="text-base sm:text-lg font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
                 VOXZIP
               </h1>
-              <span className="text-[8px] font-mono font-bold text-gray-500 bg-white/5 border border-white/5 px-1.5 py-0.5 rounded-full leading-none mb-0.5">V{APP_VERSION}</span>
+              <span className="text-[8px] font-mono font-black text-cyan-500 bg-cyan-500/5 border border-cyan-500/10 px-2 py-0.5 rounded-full leading-none flex items-center h-[16px] tracking-tight uppercase">v{APP_VERSION}</span>
             </div>
-            <p className="hidden sm:block text-[8px] text-gray-500 font-mono uppercase tracking-[0.2em] leading-none mt-1">High Performance</p>
           </div>
         </div>
         
-          <div className="flex items-center gap-1.5">
-            <div className={cn(
-              "hidden md:flex items-center gap-1 p-1 rounded-xl border mr-2",
-              isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
-            )}>
-              {(['cyberpunk', 'midnight', 'emerald', 'sunset'] as Theme[]).map(t => (
-                <button
-                  key={t}
-                  onClick={() => setTheme(t)}
-                  className={cn(
-                    "w-6 h-6 rounded-lg border transition-all",
-                    theme === t ? "border-cyan-500 scale-110 shadow-lg" : "border-transparent opacity-50 hover:opacity-100",
-                    t === 'cyberpunk' ? "bg-cyan-500" :
-                    t === 'midnight' ? "bg-blue-600" :
-                    t === 'emerald' ? "bg-emerald-500" : "bg-amber-500"
-                  )}
-                  title={`Enforce ${t} Matrix`}
-                />
-              ))}
-            </div>
-
-            {isInstallable && (
-              <button 
-                onClick={handleInstallClick}
-                className={cn(
-                  "px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-tighter border transition-all duration-300 flex items-center gap-1.5",
-                  isDarkMode 
-                    ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/20" 
-                    : "bg-cyan-50 border-cyan-200 text-cyan-600 hover:bg-cyan-100"
-                )}
-              >
-                <Download className="w-3 h-3" />
-                Install
-              </button>
-            )}
-            <button 
-              onClick={() => setIsConfigOpen(!isConfigOpen)}
-            className={cn(
-              "p-2 rounded-lg transition-all duration-300 border xl:hidden",
-              isConfigOpen 
-                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
-                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
-            )}
-          >
-            {isConfigOpen ? <X className="w-4 h-4" /> : <Settings2 className="w-4 h-4" />}
-          </button>
-
+        <div className="flex items-center gap-1.5">
           <button 
-            onClick={() => setShowAbout(true)}
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            title={isDarkMode ? "Switch to Light Array" : "Switch to Dark Array"}
             className={cn(
-              "p-2 rounded-xl transition-all duration-300 border",
-              showAbout 
-                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
-                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
-            )}
-            title="About VoxZip"
-          >
-            <Info className="w-5 h-5" />
-          </button>
-          
-          <button 
-            onClick={() => setActiveView(activeView === 'info' ? 'home' : 'info')}
-            title="App Information & Help"
-            className={cn(
-              "p-2 rounded-xl transition-all duration-300 border hidden lg:flex",
-              activeView === 'info' 
-                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
-                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
-            )}
-          >
-            <HelpCircle className="w-5 h-5" />
-          </button>
-          
-          <button 
-            onClick={() => setShowHistory(!showHistory)}
-            className={cn(
-              "p-2 rounded-xl transition-all duration-300 border relative group",
-              showHistory 
-                ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500" 
-                : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400" : "bg-white border-gray-200 text-gray-600")
-            )}
-            title="Operations Hub"
-          >
-            <LayoutGrid className="w-5 h-5" />
-            {history.length > 0 && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-cyan-500 rounded-full border-2 border-[#050507] animate-pulse" />}
-          </button>
-
-          <button 
-            onClick={() => setTheme(theme === 'cyberpunk' ? 'midnight' : 'cyberpunk')}
-            title="Toggle Next Gen Interface"
-            className={cn(
-              "p-2.5 rounded-xl transition-all duration-300 border hover:shadow-lg",
+              "p-2 rounded-xl transition-all duration-300 border hover:shadow-lg",
               isDarkMode 
-                ? "bg-white/10 border-white/5 text-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.1)]" 
-                : "bg-white border-gray-200 text-gray-600 shadow-sm"
+                ? "bg-white/10 border-white/5 text-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.1)] hover:bg-white/15" 
+                : "bg-white border-gray-200 text-gray-600 shadow-sm hover:bg-gray-50"
             )}
           >
-            {theme === 'cyberpunk' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            {isDarkMode ? <Sun className="w-4.5 h-4.5" /> : <Moon className="w-4.5 h-4.5" />}
           </button>
         </div>
       </header>
 
-      <main className="relative pt-24 pb-20 px-4 max-w-5xl mx-auto">
+      {/* Sub-header Toolbar */}
+      <div className={cn(
+        "fixed top-[53px] w-full z-40 border-b px-4 py-1.5 flex items-center justify-center gap-4 backdrop-blur-md transition-all duration-500",
+        isDarkMode ? "bg-black/40 border-white/5" : "bg-gray-50/80 border-gray-100 shadow-sm"
+      )}>
+        <button 
+          onClick={() => setShowAbout(true)}
+          className={cn(
+            "p-1.5 rounded-lg transition-all duration-300 border flex items-center gap-1.5",
+            showAbout 
+              ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.15)]" 
+              : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-gray-200" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50")
+          )}
+          title="About VoxZip"
+        >
+          <Info className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest hidden sm:inline">About</span>
+        </button>
+        
+        <button 
+          onClick={() => setActiveView(activeView === 'info' ? 'home' : 'info')}
+          title="App Information & Help"
+          className={cn(
+            "p-1.5 rounded-lg transition-all duration-300 border flex items-center gap-1.5",
+            activeView === 'info' 
+              ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.15)]" 
+              : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-gray-200" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50")
+          )}
+        >
+          <HelpCircle className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest hidden sm:inline">Info</span>
+        </button>
+        
+        <button 
+          onClick={() => setShowHistory(!showHistory)}
+          className={cn(
+            "p-1.5 rounded-lg transition-all duration-300 border relative group flex items-center gap-1.5",
+            showHistory 
+              ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.15)]" 
+              : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-gray-200" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50")
+          )}
+          title="Operations Hub"
+        >
+          <LayoutGrid className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest hidden sm:inline">Hub</span>
+          {history.length > 0 && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-cyan-500 rounded-full border-2 border-white/20 animate-pulse" />}
+        </button>
+
+        <button 
+          onClick={() => setIsConfigOpen(!isConfigOpen)}
+          className={cn(
+            "p-1.5 rounded-lg transition-all duration-300 border relative group flex items-center gap-1.5",
+            isConfigOpen 
+              ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.15)]" 
+              : (isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-gray-200" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50")
+          )}
+          title="Global Configuration"
+        >
+          <Settings2 className="w-4 h-4" />
+          <span className="text-[10px] font-black uppercase tracking-widest hidden sm:inline">Configure</span>
+        </button>
+
+        {isInstallable && (
+          <button 
+            onClick={handleInstallClick}
+            className={cn(
+              "ml-2 px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest border transition-all duration-300 flex items-center gap-1.5",
+              isDarkMode 
+                ? "bg-amber-500/10 border-amber-500/30 text-amber-500 hover:bg-amber-500/20" 
+                : "bg-amber-50 border-amber-200 text-amber-600 hover:bg-amber-100"
+            )}
+          >
+            <Download className="w-3 h-3" />
+            Install
+          </button>
+        )}
+      </div>
+
+      <main className="relative pt-32 pb-20 px-4 max-w-5xl mx-auto">
         {/* Batch Rename Modal */}
+      <AnimatePresence>
+        {isConfigOpen && (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsConfigOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className={cn(
+                "relative w-full max-w-md rounded-3xl border p-6 shadow-2xl flex flex-col gap-6",
+                isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+                    <Settings2 className="w-5 h-5 text-cyan-500" />
+                  </div>
+                  <div>
+                    <h2 className="font-black text-lg tracking-tighter uppercase">Configuration</h2>
+                    <p className="text-[9px] text-gray-500 font-mono uppercase tracking-[0.2em] font-bold">Preferences & Protocol</p>
+                  </div>
+                </div>
+                <button onClick={() => setIsConfigOpen(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Core Identity</h3>
+                  <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+                    <div className="flex flex-col">
+                      <span className="text-[11px] font-black uppercase tracking-tight text-white">Appearance Mode</span>
+                      <span className="text-[9px] text-gray-500 font-medium">{isDarkMode ? 'Dark Array Active' : 'Light Array Active'}</span>
+                    </div>
+                    <button 
+                      onClick={() => setIsDarkMode(!isDarkMode)}
+                      className={cn(
+                        "w-10 h-5 rounded-full relative transition-all duration-300",
+                        isDarkMode ? "bg-cyan-500" : "bg-gray-700"
+                      )}
+                    >
+                      <motion.div 
+                        animate={{ x: isDarkMode ? 20 : 2 }}
+                        className="absolute top-1 w-3 h-3 rounded-full bg-white shadow-sm"
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <h3 className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Processing Protocol</h3>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-black uppercase tracking-tight text-white">ZIP64 Compression</span>
+                        <span className="text-[9px] text-gray-500 font-medium">Support for files &gt; 4GB</span>
+                      </div>
+                      <button 
+                        onClick={() => setZip64(!zip64)}
+                        className={cn(
+                          "w-10 h-5 rounded-full relative transition-all duration-300",
+                          zip64 ? "bg-cyan-500" : "bg-gray-700"
+                        )}
+                      >
+                        <motion.div 
+                          animate={{ x: zip64 ? 20 : 2 }}
+                          className="absolute top-1 w-3 h-3 rounded-full bg-white shadow-sm"
+                        />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.03] border border-white/5">
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-black uppercase tracking-tight text-white">AES Encryption</span>
+                        <span className="text-[9px] text-gray-500 font-medium">Industry standard security</span>
+                      </div>
+                      <button 
+                        onClick={() => setEncryptionMethod(encryptionMethod === 'aes' ? 'zipCrypto' : 'aes')}
+                        className={cn(
+                          "w-10 h-5 rounded-full relative transition-all duration-300",
+                          encryptionMethod === 'aes' ? "bg-cyan-500" : "bg-gray-700"
+                        )}
+                      >
+                        <motion.div 
+                          animate={{ x: encryptionMethod === 'aes' ? 20 : 2 }}
+                          className="absolute top-1 w-3 h-3 rounded-full bg-white shadow-sm"
+                        />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-2 text-center">
+                <p className="text-[8px] font-mono text-gray-600 uppercase tracking-widest">VoxZip Engine v{APP_VERSION}</p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showBatchRename && (
           <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
@@ -1299,7 +1628,7 @@ export default function App() {
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className={cn(
-                "relative w-full max-w-lg rounded-[2.5rem] border p-8 shadow-2xl flex flex-col gap-6",
+                "relative w-full max-w-md rounded-3xl border p-6 shadow-2xl flex flex-col gap-5",
                 isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
               )}
             >
@@ -1309,74 +1638,74 @@ export default function App() {
                     <FileIcon className="w-5 h-5 text-cyan-500" />
                   </div>
                   <div>
-                    <h2 className="font-black text-xl tracking-tighter uppercase">Batch Rename</h2>
-                    <p className="text-[10px] text-gray-500 font-mono uppercase tracking-[0.2em] font-bold">Transformation Tools</p>
+                    <h2 className="font-black text-lg tracking-tighter uppercase">Batch Rename</h2>
+                    <p className="text-[9px] text-gray-500 font-mono uppercase tracking-[0.2em] font-bold">Transformation Tools</p>
                   </div>
                 </div>
                 <button onClick={() => setShowBatchRename(false)} className="p-2 hover:bg-white/5 rounded-xl transition-colors">
-                  <X className="w-6 h-6" />
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Prefix</label>
-                  <input 
-                    value={renamePrefix}
-                    onChange={(e) => setRenamePrefix(e.target.value)}
-                    className={cn(
-                      "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
-                      isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
-                    )}
-                    placeholder="v1_"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Suffix</label>
-                  <input 
-                    value={renameSuffix}
-                    onChange={(e) => setRenameSuffix(e.target.value)}
-                    className={cn(
-                      "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
-                      isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
-                    )}
-                    placeholder="_final"
-                  />
-                </div>
-              </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black text-gray-500 uppercase tracking-widest ml-1">Prefix</label>
+                        <input 
+                          value={renamePrefix}
+                          onChange={(e) => setRenamePrefix(e.target.value)}
+                          className={cn(
+                            "w-full rounded-lg px-3 py-2 text-[11px] font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                            isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                          )}
+                          placeholder="v1_"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black text-gray-500 uppercase tracking-widest ml-1">Suffix</label>
+                        <input 
+                          value={renameSuffix}
+                          onChange={(e) => setRenameSuffix(e.target.value)}
+                          className={cn(
+                            "w-full rounded-lg px-3 py-2 text-[11px] font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                            isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                          )}
+                          placeholder="_final"
+                        />
+                      </div>
+                    </div>
 
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Find & Replace</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <input 
-                      value={renameSearch}
-                      onChange={(e) => setRenameSearch(e.target.value)}
-                      className={cn(
-                        "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
-                        isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
-                      )}
-                      placeholder="Search"
-                    />
-                    <input 
-                      value={renameReplace}
-                      onChange={(e) => setRenameReplace(e.target.value)}
-                      className={cn(
-                        "w-full rounded-xl px-4 py-3 text-xs font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
-                        isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
-                      )}
-                      placeholder="Replace"
-                    />
-                  </div>
-                </div>
-              </div>
+                    <div className="space-y-3">
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-black text-gray-500 uppercase tracking-widest ml-1">Find & Replace</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <input 
+                            value={renameSearch}
+                            onChange={(e) => setRenameSearch(e.target.value)}
+                            className={cn(
+                              "w-full rounded-lg px-3 py-2 text-[11px] font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                              isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                            )}
+                            placeholder="Search"
+                          />
+                          <input 
+                            value={renameReplace}
+                            onChange={(e) => setRenameReplace(e.target.value)}
+                            className={cn(
+                              "w-full rounded-lg px-3 py-2 text-[11px] font-black focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                              isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                            )}
+                            placeholder="Replace"
+                          />
+                        </div>
+                      </div>
+                    </div>
 
-              <button 
-                onClick={handleBatchRename}
-                className="w-full py-4 mt-2 rounded-2xl bg-cyan-500 text-white font-black text-xs uppercase tracking-[0.2em] shadow-lg shadow-cyan-500/30 hover:scale-[1.02] active:scale-95 transition-all"
-              >
-                Apply Transformation
-              </button>
+                    <button 
+                      onClick={handleBatchRename}
+                      className="w-full py-2.5 mt-1 rounded-xl bg-cyan-500 text-white font-black text-[10px] uppercase tracking-[0.2em] shadow-lg shadow-cyan-500/30 hover:scale-[1.02] active:scale-95 transition-all"
+                    >
+                      Apply Transformation
+                    </button>
             </motion.div>
           </div>
         )}
@@ -1389,19 +1718,19 @@ export default function App() {
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
-              className="grid grid-cols-1 lg:grid-cols-12 gap-8"
+              className="grid grid-cols-1 lg:grid-cols-12 gap-6"
             >
-              <div className="lg:col-span-12 xl:col-span-8 flex flex-col gap-6">
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="lg:col-span-12 xl:col-span-8 flex flex-col gap-4">
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className={cn(
-                      "flex gap-1 p-1 rounded-2xl border transition-colors",
+                      "flex w-full gap-1 p-1 rounded-xl border transition-colors",
                       isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-100 border-gray-200"
                     )}>
                       <button 
                         onClick={() => { setMode('compress'); setFiles([]); }}
                         className={cn(
-                          "px-6 py-2.5 rounded-xl text-sm font-black uppercase tracking-tight transition-all duration-300 flex items-center gap-2 relative overflow-hidden",
+                          "flex-1 py-2.5 rounded-lg text-[11px] font-black uppercase tracking-tight transition-all duration-300 flex items-center justify-center gap-2 relative overflow-hidden",
                           mode === 'compress' 
                             ? (isDarkMode ? "bg-white/10 text-white shadow-[0_0_20px_rgba(34,211,238,0.2)] ring-1 ring-white/20" : "bg-white text-gray-900 shadow-md") 
                             : (isDarkMode ? "text-gray-400 hover:text-white hover:bg-white/5" : "text-gray-500 hover:text-gray-900 hover:bg-gray-200/50")
@@ -1413,7 +1742,7 @@ export default function App() {
                       <button 
                         onClick={() => { setMode('extract'); setFiles([]); }}
                         className={cn(
-                          "px-6 py-2.5 rounded-xl text-sm font-black uppercase tracking-tight transition-all duration-300 flex items-center gap-2 relative overflow-hidden",
+                          "flex-1 py-2.5 rounded-lg text-[11px] font-black uppercase tracking-tight transition-all duration-300 flex items-center justify-center gap-2 relative overflow-hidden",
                           mode === 'extract' 
                             ? (isDarkMode ? "bg-white/10 text-white shadow-[0_0_20px_rgba(168,85,247,0.2)] ring-1 ring-white/20" : "bg-white text-gray-900 shadow-md") 
                             : (isDarkMode ? "text-gray-400 hover:text-white hover:bg-white/5" : "text-gray-500 hover:text-gray-900 hover:bg-gray-200/50")
@@ -1425,30 +1754,10 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-1.5">
-                      <div className={cn(
-                        "hidden md:flex items-center gap-1 p-1 rounded-xl border mr-2",
-                        isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
-                      )}>
-                        {(['cyberpunk', 'midnight', 'emerald', 'sunset'] as Theme[]).map(t => (
-                          <button
-                            key={t}
-                            onClick={() => setTheme(t)}
-                            className={cn(
-                              "w-6 h-6 rounded-lg border transition-all",
-                              theme === t ? "border-cyan-500 scale-110 shadow-lg" : "border-transparent opacity-50 hover:opacity-100",
-                              t === 'cyberpunk' ? "bg-cyan-500" :
-                              t === 'midnight' ? "bg-blue-600" :
-                              t === 'emerald' ? "bg-emerald-500" : "bg-amber-500"
-                            )}
-                            title={`Enforce ${t} Matrix`}
-                          />
-                        ))}
-                      </div>
-
                       {isInstallable && (
                         <button 
                           onClick={handleInstallClick}
-                          className="px-4 py-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-500 text-[10px] font-black uppercase tracking-widest hover:bg-orange-500/20 transition-all"
+                          className="px-3 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/20 text-orange-500 text-[9px] font-black uppercase tracking-widest hover:bg-orange-500/20 transition-all"
                         >
                           Install PWA
                         </button>
@@ -1463,7 +1772,7 @@ export default function App() {
               onDragOver={onDragOver}
               onDrop={onDrop}
               className={cn(
-                "relative group h-64 rounded-[2rem] border-2 border-dashed flex flex-col items-center justify-center gap-6 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
+                "relative group h-40 rounded-3xl border-2 border-dashed flex flex-col items-center justify-center gap-3 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
                 isDarkMode 
                   ? "border-white/10 bg-white/[0.02] hover:border-cyan-500/40 hover:bg-cyan-500/[0.04]" 
                   : "border-gray-200 bg-white/40 hover:border-cyan-500/40 hover:bg-cyan-50 shadow-sm",
@@ -1478,28 +1787,28 @@ export default function App() {
                 multiple={mode === 'compress'} 
               />
               
-              <div className="flex flex-col items-center gap-3">
+              <div className="flex flex-col items-center gap-2">
                 <div className={cn(
-                  "w-16 h-16 rounded-[1.5rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
+                  "w-12 h-12 rounded-[1.25rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
                   isDarkMode ? "bg-white/5 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
                 )}>
-                  <Upload className="w-8 h-8 text-cyan-500" />
+                  <Upload className="w-6 h-6 text-cyan-500" />
                 </div>
                 
                 <div className="text-center px-4">
                   <p className={cn(
-                    "text-lg font-black tracking-tight",
+                    "text-base font-black tracking-tight",
                     isDarkMode ? "text-gray-200" : "text-gray-700"
                   )}>
                     {mode === 'compress' ? 'DROP PAYLOAD HERE' : 'DROP TO EXTRACT'}
                   </p>
-                  <p className="text-[10px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase">
+                  <p className="text-[9px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase italic">
                     {(mode === 'compress' ? 'Files or Folders' : 'Auto-Detection Active')}
                   </p>
                 </div>
               </div>
 
-              <div className="flex gap-3 z-10" onClick={(e) => e.stopPropagation()}>
+              <div className="flex gap-2 z-10" onClick={(e) => e.stopPropagation()}>
                 <button 
                   onClick={() => {
                     const input = fileInputRef.current;
@@ -1511,7 +1820,7 @@ export default function App() {
                     }
                   }}
                   className={cn(
-                    "px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                    "px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border",
                     isDarkMode ? "bg-white/5 border-white/10 hover:bg-white/10" : "bg-white border-gray-200 hover:bg-gray-50 shadow-sm"
                   )}
                 >
@@ -1529,7 +1838,7 @@ export default function App() {
                       }
                     }}
                     className={cn(
-                      "px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                      "px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border",
                       isDarkMode ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 hover:bg-cyan-500/20" : "bg-cyan-50 border-cyan-200 text-cyan-600 hover:bg-cyan-100 shadow-sm"
                     )}
                   >
@@ -1564,42 +1873,34 @@ export default function App() {
                           Wipe History
                         </button>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {history.slice(0, 4).map(item => (
                           <div 
                             key={item.id}
                             className={cn(
-                              "p-4 rounded-3xl border backdrop-blur-md flex items-center justify-between group hover:border-cyan-500/30 transition-all duration-500",
+                              "p-3 rounded-2xl border backdrop-blur-md flex items-center justify-between group hover:border-cyan-500/30 transition-all duration-500",
                               isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
                             )}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2.5">
                               <div className={cn(
-                                "w-10 h-10 rounded-2xl flex items-center justify-center border",
+                                "w-8 h-8 rounded-xl flex items-center justify-center border",
                                 item.type === 'compress' 
-                                  ? (isDarkMode ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-500" : "bg-cyan-50 border-cyan-200 text-cyan-600")
-                                  : (isDarkMode ? "bg-purple-500/10 border-purple-500/20 text-purple-500" : "bg-purple-50 border-purple-200 text-purple-600")
+                                  ? (isDarkMode ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-400" : "bg-cyan-50 border-cyan-200 text-cyan-600")
+                                  : (isDarkMode ? "bg-purple-500/10 border-purple-500/20 text-purple-400" : "bg-purple-50 border-purple-200 text-purple-600")
                               )}>
-                                {item.type === 'compress' ? <ArchiveIcon className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
+                                {item.type === 'compress' ? <ArchiveIcon className="w-4 h-4" /> : <FileArchive className="w-4 h-4" />}
                               </div>
                               <div className="min-w-0">
-                                <p className="text-[11px] font-black tracking-tight truncate max-w-[120px]">{item.fileName}</p>
-                                <p className="text-[8px] text-gray-500 font-mono font-bold uppercase">
-                                  {item.fileCount} Files • {item.timestamp.toLocaleDateString()}
+                                <p className="text-[10px] font-black tracking-tight truncate max-w-[100px] leading-tight">{item.fileName}</p>
+                                <p className="text-[8px] text-gray-500 font-mono font-bold uppercase leading-none mt-0.5">
+                                  {item.fileCount} Files • {item.timestamp.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })}
                                 </p>
-                                {item.hint && (
-                                  <div className="mt-1 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <Lock className="w-2.5 h-2.5 text-emerald-500" />
-                                    <Tooltip text={`Hint: ${item.hint}`}>
-                                      <p className="text-[7px] text-emerald-500 font-black uppercase tracking-widest cursor-help">Hint Available</p>
-                                    </Tooltip>
-                                  </div>
-                                )}
                               </div>
                             </div>
                             <div className={cn(
-                              "w-1.5 h-1.5 rounded-full",
-                              item.status === 'success' ? "bg-emerald-500" : "bg-red-500"
+                              "w-1 h-1 rounded-full",
+                              item.status === 'success' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
                             )} />
                           </div>
                         ))}
@@ -1620,8 +1921,8 @@ export default function App() {
                         "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between",
                         isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
                       )}>
-                        <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest leading-none mb-2">Payload Total</p>
-                        <p className="text-xl font-black tracking-tighter leading-none">{formatBytes(totalSize)}</p>
+                          <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest leading-none mb-2">Payload Total</p>
+                          <p className="text-xl font-black tracking-tighter leading-none">{formatBytes(totalSize)}</p>
                       </div>
                       <div className={cn(
                         "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between border-cyan-500/10",
@@ -1670,6 +1971,17 @@ export default function App() {
                               </button>
                             ))}
                           </div>
+
+                          <button 
+                            onClick={() => setShowTopology(!showTopology)}
+                            className={cn(
+                              "p-2 rounded-xl border transition-all",
+                              showTopology ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.2)]" : "bg-white/5 border-white/5 text-gray-500 hover:text-gray-300"
+                            )}
+                            title="Toggle Data Topology"
+                          >
+                            <LayoutGrid className="w-4 h-4" />
+                          </button>
 
                           <button 
                             onClick={toggleSelectAll}
@@ -1751,7 +2063,7 @@ export default function App() {
                           animate={{ scale: 1, opacity: 1 }}
                           exit={{ scale: 0.95, opacity: 0 }}
                           className={cn(
-                            "group relative rounded-2xl p-2.5 flex items-center gap-2.5 border transition-all duration-500 backdrop-blur-md overflow-hidden",
+                            "group relative rounded-xl p-2 flex items-center gap-2.5 border transition-all duration-500 backdrop-blur-md overflow-hidden",
                             isDarkMode 
                               ? "bg-white/[0.03] border-white/5 hover:border-cyan-500/30 hover:bg-white/[0.05]" 
                               : "bg-white/60 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200",
@@ -1761,25 +2073,25 @@ export default function App() {
                           <div 
                             onClick={() => toggleSelection(item.id)}
                             className={cn(
-                              "w-5 h-5 rounded flex items-center justify-center border cursor-pointer shrink-0 transition-all",
+                              "w-4 h-4 rounded-md flex items-center justify-center border cursor-pointer shrink-0 transition-all",
                               selectedIds.has(item.id) 
                                 ? "bg-cyan-500 border-cyan-500 text-white" 
                                 : "bg-white/5 border-white/10"
                             )}
                           >
-                            {selectedIds.has(item.id) && <CheckCircle2 className="w-3.5 h-3.5" />}
+                            {selectedIds.has(item.id) && <CheckCircle2 className="w-3 h-3" />}
                           </div>
 
                           <div className={cn(
-                            "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:scale-105",
+                            "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:scale-105",
                             isDarkMode ? "bg-white/5 border border-white/5" : "bg-gray-100"
                           )}>
-                            {item.status === 'completed' ? <CheckCircle2 className="w-5 h-5 text-emerald-400" /> :
-                             item.status === 'processing' ? <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" /> :
-                             item.status === 'error' ? <AlertCircle className="w-4 h-4 text-red-500" /> :
+                            {item.status === 'completed' ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> :
+                             item.status === 'processing' ? <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" /> :
+                             item.status === 'error' ? <AlertCircle className="w-3.5 h-3.5 text-red-500" /> :
                              getFileIcon(item.file.name)}
                           </div>
-                                                 <div className="flex-1 min-w-0 group-hover:pr-14 transition-all duration-300">
+                          <div className="flex-1 min-w-0 group-hover:pr-12 transition-all duration-300">
                             {editingFileId === item.id ? (
                               <input 
                                 autoFocus
@@ -1787,7 +2099,7 @@ export default function App() {
                                 onChange={(e) => setEditName(e.target.value)}
                                 onBlur={() => handleSingleRename(item.id)}
                                 onKeyDown={(e) => e.key === 'Enter' && handleSingleRename(item.id)}
-                                className="w-full bg-cyan-500/20 border border-cyan-500/30 rounded px-2 py-0.5 text-[11px] font-black text-white focus:outline-none"
+                                className="w-full bg-cyan-500/20 border border-cyan-500/30 rounded px-2 py-0.5 text-[10px] font-black text-white focus:outline-none"
                               />
                             ) : (
                               <h4 
@@ -1797,47 +2109,47 @@ export default function App() {
                                   const lastDot = name.lastIndexOf('.');
                                   setEditName(lastDot !== -1 ? name.substring(0, lastDot) : name);
                                 }}
-                                className="text-[11px] font-black truncate tracking-tight cursor-text hover:text-cyan-400 transition-colors"
+                                className="text-[10px] font-black truncate tracking-tight cursor-text hover:text-cyan-400 transition-colors"
                               >
                                 {item.path && item.path.includes('/') ? (
                                   <span className="flex items-center gap-1">
-                                    <span className="text-gray-500 font-mono text-[9px] font-bold opacity-60">{item.path.split('/').slice(0, -1).join('/')}/</span>
+                                    <span className="text-gray-500 font-mono text-[8px] font-bold opacity-60">{item.path.split('/').slice(0, -1).join('/')}/</span>
                                     {item.file.name}
                                   </span>
                                 ) : item.file.name}
                               </h4>
                             )}
                             <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="text-[9px] font-mono font-bold text-gray-500 bg-white/5 px-2 py-0.5 rounded-md">
+                              <span className="text-[8px] font-mono font-bold text-gray-500 bg-white/5 px-1.5 py-0.5 rounded-md">
                                 {formatBytes(item.file.size)}
                               </span>
-                              <span className="text-[8px] font-mono font-black text-gray-400 bg-white/5 border border-white/5 px-1.5 py-0.5 rounded uppercase leading-none opacity-60">
+                              <span className="text-[7.5px] font-mono font-black text-gray-400 bg-white/5 border border-white/5 px-1.5 py-0.5 rounded uppercase leading-none opacity-60">
                                 {item.file.name.split('.').pop() || 'N/A'}
                               </span>
                               {item.status === 'processing' && (
                                 <div className="flex items-center gap-1">
-                                  <Loader2 className="w-3 h-3 text-cyan-400 animate-spin" />
-                                  <span className="text-[8px] font-black text-cyan-400 uppercase tracking-tighter">Syncing...</span>
+                                  <Loader2 className="w-2.5 h-2.5 text-cyan-400 animate-spin" />
+                                  <span className="text-[7.5px] font-black text-cyan-400 uppercase tracking-tighter">Syncing...</span>
                                 </div>
                               )}
                               {item.status === 'completed' && (
                                 <div className="flex items-center gap-1">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                                  <span className="text-[8px] font-black text-emerald-500 uppercase tracking-tighter">Verified</span>
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-500" />
+                                  <span className="text-[7.5px] font-black text-emerald-500 uppercase tracking-tighter">Verified</span>
                                 </div>
                               )}
                               {item.status === 'error' && (
                                 <Tooltip text={item.errorMessage || "System Breach Detected"}>
                                   <div className="flex items-center gap-1 cursor-help">
-                                    <AlertCircle className="w-3 h-3 text-red-500 animate-pulse" />
-                                    <span className="text-[8px] font-black text-red-500 uppercase tracking-tighter underline decoration-dotted">Critical Failure</span>
+                                    <AlertCircle className="w-2.5 h-2.5 text-red-500 animate-pulse" />
+                                    <span className="text-[7.5px] font-black text-red-500 uppercase tracking-tighter underline decoration-dotted">Critical Failure</span>
                                   </div>
                                 </Tooltip>
                               )}
                               {item.compressedSize && item.status === 'completed' && (
                                 <>
                                   <div className="w-0.5 h-0.5 rounded-full bg-gray-600" />
-                                  <p className="text-[9px] text-cyan-500 font-black uppercase tracking-tighter">
+                                  <p className="text-[8px] text-cyan-500 font-black uppercase tracking-tighter">
                                     {(100 - (item.compressedSize / item.file.size) * 100).toFixed(0)}% Savings
                                   </p>
                                 </>
@@ -1847,40 +2159,38 @@ export default function App() {
 
                           {!isProcessing && (
                             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 translate-x-4 group-hover:translate-x-0 transition-all duration-300">
-                              {mode === 'extract' && (
-                                <button
-                                  onClick={() => handlePreview(item)}
-                                  className="p-1.5 rounded-lg hover:bg-cyan-500/10 text-cyan-400 transition-colors"
-                                  title="Quick Look Picker"
-                                >
-                                  <Eye className="w-3.5 h-3.5" />
-                                </button>
-                              )}
+                              <button
+                                onClick={() => handleQuickView(item)}
+                                className="p-1 rounded-lg hover:bg-white/10 text-gray-400 hover:text-cyan-400 transition-colors"
+                                title="Quick Look"
+                              >
+                                <Eye className="w-3 h-3" />
+                              </button>
                               {mode === 'extract' && (
                                 <div className="flex items-center gap-1">
                                   <button
                                     onClick={() => previewArchive(item)}
-                                    className="p-1.5 rounded-lg hover:bg-cyan-500/10 text-cyan-400 transition-colors"
-                                    title="Preview Archive Contents"
+                                    className="p-1 rounded-lg hover:bg-cyan-500/10 text-cyan-400 transition-colors"
+                                    title="Preview"
                                   >
-                                    <Eye className="w-3.5 h-3.5" />
+                                    <Layers className="w-3 h-3" />
                                   </button>
                                   <button
                                     disabled={isVerifying}
                                     onClick={() => verifyArchive(item)}
-                                    className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-emerald-400 transition-colors"
-                                    title="Verify Integrity"
+                                    className="p-1 rounded-lg hover:bg-emerald-500/10 text-emerald-400 transition-colors"
+                                    title="Verify"
                                   >
-                                    {isVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                                    {isVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <ShieldCheck className="w-3 h-3" />}
                                   </button>
                                 </div>
                               )}
                               <button 
                                 onClick={() => removeFile(item.id)}
-                                title="Remove File From List"
-                                className="p-1.5 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors"
+                                title="Remove"
+                                className="p-1 rounded-lg hover:bg-red-500/10 text-red-400 transition-colors"
                               >
-                                <X className="w-3.5 h-3.5" />
+                                <X className="w-3 h-3" />
                               </button>
                             </div>
                           )}
@@ -1918,25 +2228,44 @@ export default function App() {
                                "rounded-[2rem] p-5 border backdrop-blur-xl",
                                isDarkMode ? "bg-white/[0.03] border-white/10" : "bg-white border-gray-100 shadow-sm"
                              )}>
-                               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 mb-3 block">Matrix Optimization</label>
-                               <div className="grid grid-cols-3 gap-2 mb-4">
+                               <div className="flex items-center justify-between ml-1 mb-4">
+                                 <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest block">Matrix Optimization</label>
+                                 {recommendedLevel && level !== recommendedLevel && mode === 'compress' && (
+                                   <motion.button
+                                     initial={{ opacity: 0, x: 10 }}
+                                     animate={{ opacity: 1, x: 0 }}
+                                     onClick={() => applyOptimization(recommendedLevel)}
+                                     className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-500 border border-cyan-500/20 transition-all group"
+                                   >
+                                     <Sparkles className="w-2.5 h-2.5 animate-pulse" />
+                                     <span className="text-[8px] font-black uppercase tracking-tighter">Use AI Suggestions</span>
+                                   </motion.button>
+                                 )}
+                               </div>
+                               <div className="grid grid-cols-3 gap-3 mb-6">
                                  {[
-                                   { name: 'SPEED', level: 'fast', icon: <Zap className="w-3 h-3" /> },
-                                   { name: 'BALANCED', level: 'normal', icon: <Activity className="w-3 h-3" /> },
-                                   { name: 'MAXIMUM', level: 'ultra', icon: <Layers className="w-3 h-3" /> }
+                                   { name: 'SPEED', level: 'fast', icon: <Zap className="w-4 h-4" /> },
+                                   { name: 'BALANCED', level: 'normal', icon: <Activity className="w-4 h-4" /> },
+                                   { name: 'MAXIMUM', level: 'ultra', icon: <Layers className="w-4 h-4" /> }
                                  ].map(p => (
                                    <button
                                      key={p.name}
                                      onClick={() => applyOptimization(p.level as any)}
                                      className={cn(
-                                       "flex flex-col items-center justify-center gap-1.5 p-3 rounded-2xl border transition-all duration-300",
+                                       "flex flex-col items-center justify-center gap-2 p-4 rounded-2xl border transition-all duration-300 relative overflow-hidden",
                                        level === p.level 
                                          ? "bg-cyan-500 border-cyan-400 text-white shadow-lg scale-105" 
-                                         : "bg-white/5 border-white/5 text-gray-500 hover:border-white/10"
+                                         : "bg-white/5 border-white/5 text-gray-500 hover:border-white/10",
+                                       recommendedLevel === p.level && level !== p.level && "ring-1 ring-cyan-500/50"
                                      )}
                                    >
+                                     {recommendedLevel === p.level && (
+                                       <div className="absolute top-0 right-0 p-1.5">
+                                         <div className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(6,211,238,0.6)]" />
+                                       </div>
+                                     )}
                                      {p.icon}
-                                     <span className="text-[8px] font-black">{p.name}</span>
+                                     <span className="text-[9px] font-black uppercase tracking-tighter">{p.name}</span>
                                    </button>
                                  ))}
                                </div>
@@ -2239,78 +2568,78 @@ export default function App() {
                       </div>
                     )}
 
-                      <div className="flex flex-col gap-3">
-                        <button 
-                          disabled={files.length === 0 || isProcessing}
-                          onClick={mode === 'compress' ? compressFiles : handleExtractToFolder}
-                          className={cn(
-                            "w-full py-5 rounded-[2rem] font-black text-sm uppercase tracking-[0.2em] flex items-center justify-center gap-3 transition-all duration-700 relative overflow-hidden group/btn shadow-[0_20px_50px_-10px_rgba(6,182,212,0.4)]",
-                            files.length === 0 || isProcessing
-                              ? (isDarkMode ? "bg-white/5 text-gray-700 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
-                              : "bg-gradient-to-tr from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.03] active:scale-95 ring-1 ring-white/20 hover:ring-white/40"
-                          )}
-                        >
-                          <div className="absolute inset-0 bg-[radial-gradient(circle_at_var(--x)_var(--y),rgba(255,255,255,0.2),transparent)] opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300" 
-                               style={{ "--x": "50%", "--y": "50%" } as any} />
-                          {isProcessing ? (
-                             <div className="flex items-center gap-3">
-                               <Loader2 className="w-5 h-5 animate-spin text-white" />
-                               <span className="relative z-10 animate-pulse">Initializing Matrix...</span>
-                             </div>
-                          ) : (
-                            <>
-                              <span className="relative z-10">{mode === 'compress' ? 'Assemble Archive' : (
-                                // @ts-ignore
-                                window.showDirectoryPicker ? 'Extract to Target' : 'Decompile Data'
-                              )}</span>
-                              <Activity className="w-5 h-5 relative z-10 transition-transform group-hover/btn:rotate-90 duration-500" />
-                              <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
-                            </>
-                          )}
-                        </button>
-
-                        {mode === 'extract' && (
-                          <button
+                        <div className="flex flex-col gap-2">
+                          <button 
                             disabled={files.length === 0 || isProcessing}
-                            onClick={() => extractFiles()}
+                            onClick={mode === 'compress' ? compressFiles : handleExtractToFolder}
                             className={cn(
-                              "w-full py-3 rounded-2xl font-black text-[10px] uppercase tracking-[0.3em] flex items-center justify-center gap-2 transition-all border group",
-                              isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:bg-white/10" : "bg-gray-50 border-gray-100 text-gray-500"
+                              "w-full py-3.5 rounded-2xl font-black text-xs uppercase tracking-[0.2em] flex items-center justify-center gap-2 transition-all duration-700 relative overflow-hidden group/btn shadow-[0_10px_30px_-5px_rgba(6,182,212,0.3)]",
+                              files.length === 0 || isProcessing
+                                ? (isDarkMode ? "bg-white/5 text-gray-700 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
+                                : "bg-gradient-to-tr from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.02] active:scale-95 ring-1 ring-white/20 hover:ring-white/40"
                             )}
                           >
-                            <Download className="w-3.5 h-3.5 transition-transform group-hover:-translate-y-0.5" />
-                            Direct Sequential Output
+                            <div className="absolute inset-0 bg-[radial-gradient(circle_at_var(--x)_var(--y),rgba(255,255,255,0.2),transparent)] opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300" 
+                                 style={{ "--x": "50%", "--y": "50%" } as any} />
+                            {isProcessing ? (
+                               <div className="flex items-center gap-2">
+                                 <Loader2 className="w-4 h-4 animate-spin text-white" />
+                                 <span className="relative z-10 animate-pulse text-[10px]">Processing...</span>
+                               </div>
+                            ) : (
+                              <>
+                                <span className="relative z-10 text-xs">{mode === 'compress' ? 'Assemble Archive' : (
+                                  // @ts-ignore
+                                  window.showDirectoryPicker ? 'Extract to Target' : 'Decompile'
+                                )}</span>
+                                <Activity className="w-4 h-4 relative z-10 transition-transform group-hover/btn:rotate-90 duration-500" />
+                                <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
+                              </>
+                            )}
                           </button>
-                        )}
-                      </div>
+
+                          {mode === 'extract' && (
+                            <button
+                              disabled={files.length === 0 || isProcessing}
+                              onClick={() => extractFiles()}
+                              className={cn(
+                                "w-full py-2.5 rounded-xl font-black text-[9px] uppercase tracking-[0.3em] flex items-center justify-center gap-2 transition-all border group",
+                                isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:bg-white/10" : "bg-gray-50 border-gray-100 text-gray-500"
+                              )}
+                            >
+                              <Download className="w-3 h-3 transition-transform group-hover:-translate-y-0.5" />
+                              Sequential Download
+                            </button>
+                          )}
+                        </div>
                   </motion.div>
 
                   <AnimatePresence>
                     {showProgress && (
-                      <div className="fixed bottom-0 left-0 right-0 z-[200] p-6 lg:p-12 pointer-events-none">
+                      <div className="fixed bottom-0 left-0 right-0 z-[200] p-4 lg:p-10 pointer-events-none">
                         <motion.div 
                           initial={{ y: 200, opacity: 0, scale: 0.95 }}
                           animate={{ y: 0, opacity: 1, scale: 1 }}
                           exit={{ y: 200, opacity: 0, scale: 0.95 }}
-                          className="max-w-4xl mx-auto bg-[#050507]/90 backdrop-blur-3xl border border-white/10 rounded-[3rem] p-8 lg:p-10 shadow-[0_40px_120px_-20px_rgba(0,0,0,0.9)] pointer-events-auto overflow-hidden relative group"
+                          className="max-w-4xl mx-auto bg-[#050507]/90 backdrop-blur-3xl border border-white/10 rounded-[2.5rem] p-6 lg:p-8 shadow-[0_40px_120px_-20px_rgba(0,0,0,0.9)] pointer-events-auto overflow-hidden relative group"
                         >
                           <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-50" />
                           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_-20%,rgba(6,182,212,0.1),transparent)] pointer-events-none" />
                           
-                          <div className="flex flex-col md:flex-row items-center justify-between gap-8 mb-10">
-                            <div className="flex items-center gap-6">
-                              <div className="w-20 h-20 rounded-3xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center relative overflow-hidden group/icon">
+                          <div className="flex flex-col md:flex-row items-center justify-between gap-6 mb-8">
+                            <div className="flex items-center gap-5">
+                              <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center relative overflow-hidden group/icon">
                                  <motion.div 
                                    animate={{ rotate: 360 }}
                                    transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
                                    className="absolute inset-0 border-2 border-dashed border-cyan-500/10 rounded-full scale-150"
                                  />
-                                 <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
+                                 <Loader2 className="w-8 h-8 text-cyan-400 animate-spin" />
                                  <div className="absolute inset-0 bg-scan-line pointer-events-none opacity-20" />
                               </div>
                               <div>
                                 <div className="flex items-center gap-3">
-                                  <h3 className="text-base font-black uppercase tracking-[0.5em] text-white">Quantum Matrix Assembly</h3>
+                                  <h3 className="text-sm font-black uppercase tracking-[0.4em] text-white">Quantum Matrix Assembly</h3>
                                   <div className="flex gap-1">
                                     {[1, 2, 3].map(i => (
                                       <motion.div 
@@ -2322,44 +2651,40 @@ export default function App() {
                                     ))}
                                   </div>
                                 </div>
-                                <div className="flex items-center gap-4 mt-3">
-                                  <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
+                                <div className="flex items-center gap-3 mt-2.5">
+                                  <div className="flex items-center gap-1.5 text-[9px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-2.5 py-1 rounded-full">
                                     <Zap className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
                                     <span>{elapsed > 0 ? formatBytes(processedBytes / elapsed) : '---'}/s</span>
                                   </div>
-                                  <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
+                                  <div className="flex items-center gap-1.5 text-[9px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-2.5 py-1 rounded-full">
                                     <Layers className="w-3.5 h-3.5 text-cyan-500" />
-                                    <span>{files.length} Clusters</span>
-                                  </div>
-                                  <div className="hidden sm:flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
-                                    <Cpu className="w-3.5 h-3.5 text-purple-500" />
-                                    <span>Direct IO</span>
+                                    <span>{files.length} Parts</span>
                                   </div>
                                 </div>
                               </div>
                             </div>
                             
                             <div className="flex flex-col items-end">
-                              <div className="flex items-baseline gap-2">
+                              <div className="flex items-baseline gap-1.5">
                                 <motion.span 
-                                  className="text-6xl font-black font-mono text-white tracking-tighter"
+                                  className="text-5xl font-black font-mono text-white tracking-tighter"
                                   key={Math.round(overallProgress)}
                                   initial={{ y: 5, opacity: 0.5 }}
                                   animate={{ y: 0, opacity: 1 }}
                                 >
                                   {Math.round(overallProgress)}
                                 </motion.span>
-                                <span className="text-xl font-black text-cyan-500 mb-1">%</span>
+                                <span className="text-lg font-black text-cyan-500 mb-1">%</span>
                               </div>
-                              <div className="flex items-center gap-2 mt-2">
-                                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.4em]">Structural Synchronization</span>
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.3em]">Syncing Matrix</span>
                               </div>
                             </div>
                           </div>
                           
                           <div className="space-y-6">
-                            <div className="h-3 bg-white/5 rounded-full overflow-hidden relative group/bar">
+                            <div className="h-2.5 bg-white/5 rounded-full overflow-hidden relative group/bar">
                               <motion.div 
                                 className="h-full bg-gradient-to-r from-cyan-400 via-blue-600 to-purple-600 relative z-10"
                                 animate={{ width: `${overallProgress}%` }}
@@ -2370,29 +2695,29 @@ export default function App() {
                               <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.05)_50%,transparent_75%)] bg-[length:50px_50px] animate-matrix-scroll opacity-30" />
                             </div>
                             
-                            <div className="grid grid-cols-3 gap-8 pt-2">
-                              <div className="space-y-2">
+                            <div className="grid grid-cols-3 gap-6 xl:gap-8 pt-1">
+                              <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Data Buffer</span>
-                                  <span className="text-[9px] font-mono text-cyan-500/70">8.4 GB/S</span>
+                                  <span className="text-[8px] font-black text-gray-600 uppercase tracking-[0.2em]">Buffer</span>
+                                  <span className="text-[8px] font-mono text-cyan-500/60">ACTIVE</span>
                                 </div>
                                 <div className="h-1 bg-white/5 rounded-full overflow-hidden">
                                   <motion.div animate={{ width: ['20%', '80%', '40%'] }} transition={{ duration: 4, repeat: Infinity }} className="h-full bg-cyan-500/30" />
                                 </div>
                               </div>
-                              <div className="space-y-2">
+                              <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Entropy Filter</span>
-                                  <span className="text-[9px] font-mono text-purple-500/70">Lvl 9 Active</span>
+                                  <span className="text-[8px] font-black text-gray-600 uppercase tracking-[0.2em]">Entropy</span>
+                                  <span className="text-[8px] font-mono text-purple-500/60">MAX</span>
                                 </div>
                                 <div className="h-1 bg-white/5 rounded-full overflow-hidden">
                                   <motion.div animate={{ width: ['60%', '30%', '90%'] }} transition={{ duration: 3, repeat: Infinity }} className="h-full bg-purple-500/30" />
                                 </div>
                               </div>
-                              <div className="space-y-2">
+                              <div className="space-y-1.5">
                                 <div className="flex items-center justify-between">
-                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Network Link</span>
-                                  <span className="text-[9px] font-mono text-white/50">SECURE</span>
+                                  <span className="text-[8px] font-black text-gray-600 uppercase tracking-[0.2em]">Network</span>
+                                  <span className="text-[8px] font-mono text-white/40">LOCKED</span>
                                 </div>
                                 <div className="h-1 bg-white/5 rounded-full overflow-hidden">
                                   <motion.div animate={{ width: ['40%', '60%', '50%'] }} transition={{ duration: 2, repeat: Infinity }} className="h-full bg-emerald-500/30" />
@@ -2402,9 +2727,9 @@ export default function App() {
                           </div>
                           
                           <div className="mt-8 flex justify-center">
-                             <div className="px-6 py-2 rounded-full border border-white/5 bg-white/5 backdrop-blur-md flex items-center gap-3">
-                               <RefreshCw className="w-3.5 h-3.5 text-gray-500 animate-spin-reverse" />
-                               <span className="text-[9px] font-mono font-black text-gray-500 uppercase tracking-[0.4em]">Calibrating structural arrays...</span>
+                             <div className="px-5 py-1.5 rounded-full border border-white/5 bg-white/5 backdrop-blur-md flex items-center gap-2.5">
+                               <RefreshCw className="w-3 h-3 text-gray-500 animate-spin-reverse" />
+                               <span className="text-[8px] font-mono font-black text-gray-500 uppercase tracking-[0.3em]">Calibrating structural arrays...</span>
                              </div>
                           </div>
                         </motion.div>
@@ -2624,32 +2949,32 @@ export default function App() {
         <button 
           onClick={() => { setActiveView('home'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all outline-none",
-            activeView === 'home' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
+            "flex flex-col items-center gap-0.5 transition-all outline-none",
+            activeView === 'home' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
           )}
         >
-          <Home className="w-5 h-5" />
-          <span className="text-[9px] font-black uppercase tracking-tight">Home</span>
+          <Home className="w-[18px] h-[18px]" />
+          <span className="text-[8px] font-black uppercase tracking-widest">Home</span>
         </button>
         <button 
           onClick={() => { setActiveView('info'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all outline-none",
-            activeView === 'info' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
+            "flex flex-col items-center gap-0.5 transition-all outline-none",
+            activeView === 'info' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
           )}
         >
-          <Info className="w-5 h-5" />
-          <span className="text-[9px] font-black uppercase tracking-tight">Info</span>
+          <Info className="w-[18px] h-[18px]" />
+          <span className="text-[8px] font-black uppercase tracking-widest">Info</span>
         </button>
         <button 
           onClick={() => { setActiveView('about'); setIsConfigOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all outline-none",
-            activeView === 'about' ? "text-cyan-400 scale-110" : "text-gray-500 scale-90"
+            "flex flex-col items-center gap-0.5 transition-all outline-none",
+            activeView === 'about' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
           )}
         >
-          <LayoutGrid className="w-5 h-5" />
-          <span className="text-[9px] font-black uppercase tracking-tight">About</span>
+          <LayoutGrid className="w-[18px] h-[18px]" />
+          <span className="text-[8px] font-black uppercase tracking-widest">About</span>
         </button>
       </nav>
 
@@ -2763,14 +3088,19 @@ export default function App() {
                     <p className="text-xs text-gray-600 mt-1">Completed tasks will be indexed here for your records.</p>
                   </div>
                 ) : (
-                  history.map((op) => (
+                history.map((op) => {
+                  const cachedItem = cachedArchives.find(c => c.id === op.id);
+                  const isCached = op.isCached && cachedItem;
+
+                  return (
                     <motion.div 
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       key={op.id}
                       className={cn(
-                        "p-4 rounded-2xl border transition-all duration-300",
-                        isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                        "p-4 rounded-2xl border transition-all duration-300 group",
+                        isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100",
+                        isCached && "border-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.05)]"
                       )}
                     >
                       <div className="flex items-start justify-between gap-4">
@@ -2782,25 +3112,71 @@ export default function App() {
                             {op.type === 'compress' ? <ArchiveIcon className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
                           </div>
                           <div>
-                            <p className="text-xs font-bold truncate max-w-[150px]">{op.fileName}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-xs font-bold truncate max-w-[150px]">{op.fileName}</p>
+                              {isCached && (
+                                <div className="flex items-center gap-1">
+                                  <div className="w-1 h-1 rounded-full bg-blue-500 animate-pulse" />
+                                  <span className="text-[8px] font-black text-blue-500 uppercase tracking-tighter">Cached</span>
+                                </div>
+                              )}
+                            </div>
                             <p className="text-[9px] text-gray-500 font-mono mt-0.5">
                               {op.type.toUpperCase()} • {op.fileCount} ITEMS • {op.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </p>
                           </div>
                         </div>
-                        {op.status === 'success' ? (
-                          <div className="px-2 py-1 rounded-md bg-emerald-500/10 text-[9px] font-bold text-emerald-400 border border-emerald-500/20">COMPLETE</div>
-                        ) : (
-                          <div className="px-2 py-1 rounded-md bg-red-500/10 text-[9px] font-bold text-red-400 border border-red-500/20">FAILED</div>
-                        )}
+                        <div className="flex items-start gap-1">
+                          {isCached && (
+                            <button 
+                              onClick={() => togglePinArchive(op.id)}
+                              className={cn(
+                                "p-1.5 rounded-lg transition-colors",
+                                cachedItem?.pinned ? "bg-amber-500/10 text-amber-500" : "hover:bg-white/5 text-gray-600"
+                              )}
+                            >
+                              <Pin className={cn("w-3.5 h-3.5", cachedItem?.pinned && "fill-current")} />
+                            </button>
+                          )}
+                          {op.status === 'success' ? (
+                            <div className="px-2 py-1 rounded-md bg-emerald-500/10 text-[9px] font-bold text-emerald-400 border border-emerald-500/20">COMPLETE</div>
+                          ) : (
+                            <div className="px-2 py-1 rounded-md bg-red-500/10 text-[9px] font-bold text-red-400 border border-red-500/20">FAILED</div>
+                          )}
+                        </div>
                       </div>
+
+                      {isCached && (
+                        <div className="mt-4 pt-3 border-t border-white/5 flex gap-2">
+                          <button 
+                            disabled={isReExtracting}
+                            onClick={() => reExtract(cachedItem)}
+                            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 transition-all group/btn"
+                          >
+                            {isReExtracting ? (
+                              <RotateCcw className="w-3 h-3 text-blue-400 animate-spin" />
+                            ) : (
+                              <Download className="w-3 h-3 text-blue-400 group-hover/btn:translate-y-0.5 transition-transform" />
+                            )}
+                            <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest">Re-Extract</span>
+                          </button>
+                          <button 
+                            onClick={() => deleteCachedArchive(op.id)}
+                            className="p-2 rounded-xl bg-red-500/5 hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+
                       {op.details && (
                         <p className="mt-3 p-2 rounded-lg bg-black/40 text-[10px] font-mono text-red-300/80 leading-relaxed border border-red-500/10 italic">
                           &gt; {op.details}
                         </p>
                       )}
                     </motion.div>
-                  ))
+                  );
+                })
                 )}
               </div>
 
@@ -2822,10 +3198,125 @@ export default function App() {
                   </button>
                 </div>
                 <button 
-                  onClick={() => setHistory([])}
+                  onClick={async () => {
+                    setHistory([]);
+                    await historyService.clearAll();
+                    await loadMatrixHub();
+                  }}
                   className="w-full py-3 rounded-2xl border border-white/5 hover:bg-white/5 transition-all text-[10px] font-black uppercase tracking-widest text-gray-500"
                 >
                   Wipe Hub Data
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {aiInsights.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            className="fixed right-6 top-24 z-[150] w-72 space-y-3 pointer-events-auto hidden xl:block"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+              <h4 className="text-[9px] font-black uppercase tracking-[0.3em] text-white/40">Smart Insight Matrix</h4>
+            </div>
+            {aiInsights.map((insight, idx) => (
+              <motion.div
+                key={idx}
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: idx * 0.1 }}
+                className={cn(
+                  "p-4 rounded-2xl border backdrop-blur-xl relative overflow-hidden group",
+                  insight.type === 'warn' ? "bg-amber-500/5 border-amber-500/20" : 
+                  insight.type === 'success' ? "bg-emerald-500/5 border-emerald-500/20" :
+                  "bg-cyan-500/5 border-cyan-500/20"
+                )}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={cn(
+                    "w-1.5 h-1.5 rounded-full mt-1.5",
+                    insight.type === 'warn' ? "bg-amber-500 animate-pulse" :
+                    insight.type === 'success' ? "bg-emerald-500" :
+                    "bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.5)]"
+                  )} />
+                  <div>
+                    <h5 className={cn(
+                      "text-[9px] font-black uppercase tracking-[0.15em]",
+                      insight.type === 'warn' ? "text-amber-400" :
+                      insight.type === 'success' ? "text-emerald-400" :
+                      "text-cyan-400"
+                    )}>{insight.title}</h5>
+                    <p className="text-[10px] text-gray-500 mt-1 leading-relaxed font-bold font-mono">
+                      {insight.content}
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {quickView && (
+          <div className="fixed inset-0 z-[500] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setQuickView(null)}
+              className="absolute inset-0 bg-black/90 backdrop-blur-xl"
+            />
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 40 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 40 }}
+              className={cn(
+                "relative w-full max-w-4xl rounded-[3rem] border shadow-2xl overflow-hidden flex flex-col max-h-[85vh]",
+                isDarkMode ? "bg-[#050507] border-white/10" : "bg-white border-gray-200"
+              )}
+            >
+              <div className="p-6 border-b border-white/5 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                   <div className="w-10 h-10 rounded-2xl bg-cyan-500/10 flex items-center justify-center">
+                     <Eye className="w-5 h-5 text-cyan-500" />
+                   </div>
+                   <div>
+                     <h3 className="font-black text-lg tracking-tighter">{quickView.name}</h3>
+                     <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-widest leading-none mt-1">Object Quick-Look Matrix</p>
+                   </div>
+                </div>
+                <button onClick={() => setQuickView(null)} className="p-3 hover:bg-white/5 rounded-2xl transition-all border border-transparent hover:border-white/10">
+                  <X className="w-6 h-6 text-gray-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto p-8 flex items-center justify-center min-h-[300px]">
+                {quickView.type === 'image' ? (
+                  <img src={quickView.content!} alt={quickView.name} className="max-w-full max-h-full object-contain rounded-xl shadow-2xl" />
+                ) : (
+                  <div className="w-full h-full bg-black/40 rounded-3xl p-6 border border-white/5 overflow-auto custom-scrollbar">
+                     <pre className="text-[11px] font-mono text-gray-400 whitespace-pre-wrap break-all leading-relaxed">
+                        {quickView.content}
+                     </pre>
+                  </div>
+                )}
+              </div>
+              <div className="p-6 border-t border-white/5 flex justify-between items-center bg-white/[0.01]">
+                 <div className="flex items-center gap-2">
+                    <Info className="w-3.5 h-3.5 text-gray-600" />
+                    <span className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">Client-Side Read Encrypted Vector</span>
+                 </div>
+                 <button 
+                  onClick={() => setQuickView(null)}
+                  className="px-8 py-3 rounded-2xl bg-white/5 border border-white/10 text-white text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all"
+                >
+                  Close Matrix
                 </button>
               </div>
             </motion.div>
@@ -2903,6 +3394,225 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {showTopology && files.length > 0 && (
+          <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-[100] w-full max-w-4xl px-6 pointer-events-none">
+            <motion.div
+              initial={{ opacity: 0, y: 20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 20, scale: 0.95 }}
+              className="bg-black/80 backdrop-blur-3xl border border-white/10 rounded-[2.5rem] p-6 shadow-2xl pointer-events-auto"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                   <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
+                     <LayoutGrid className="w-4 h-4 text-cyan-500" />
+                   </div>
+                   <h3 className="text-xs font-black uppercase tracking-[0.2em] text-white">Object Topology</h3>
+                </div>
+                <button onClick={() => setShowTopology(false)} className="p-2 hover:bg-white/5 rounded-xl transition-all">
+                  <X className="w-4 h-4 text-gray-500" />
+                </button>
+              </div>
+              <MatrixTopology files={files} isDarkMode={isDarkMode} />
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <CommandPalette 
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        onAction={handleCommand}
+        isDarkMode={isDarkMode}
+      />
     </div>
   );
 }
+
+const MatrixTopology = ({ files, isDarkMode }: { files: FileItem[], isDarkMode: boolean }) => {
+  const totalSize = files.reduce((acc, f) => acc + f.file.size, 0);
+  if (totalSize === 0) return null;
+
+  return (
+    <div className="w-full h-32 rounded-2xl bg-black/40 border border-white/5 overflow-hidden p-1.5 flex gap-1.5">
+      {files.map((f, i) => (
+        <motion.div
+          key={f.id}
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: i * 0.05 }}
+          style={{ width: `${(f.file.size / totalSize) * 100}%` }}
+          className={cn(
+            "h-full rounded-lg relative group overflow-hidden border border-white/5 min-w-[20px]",
+            i % 4 === 0 ? "bg-cyan-500/30" : i % 4 === 1 ? "bg-blue-500/30" : i % 4 === 2 ? "bg-purple-500/30" : "bg-emerald-500/30"
+          )}
+        >
+          <div className="absolute inset-0 bg-scan-line opacity-20" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/60 backdrop-blur-sm">
+             <p className="text-[8px] font-black uppercase text-white truncate w-full text-center tracking-tighter">{f.file.name}</p>
+             <p className="text-[7px] font-mono text-cyan-400 mt-1">{formatBytes(f.file.size)}</p>
+          </div>
+        </motion.div>
+      ))}
+    </div>
+  );
+};
+
+const CommandPalette = ({ 
+  isOpen, 
+  onClose, 
+  onAction, 
+  isDarkMode 
+}: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  onAction: (id: string) => void,
+  isDarkMode: boolean
+}) => {
+  const [query, setQuery] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      const timer = setTimeout(() => inputRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    } else {
+      setQuery('');
+    }
+  }, [isOpen]);
+
+  const commands = [
+    { id: 'compress', title: 'Switch to Compress', icon: <ArchiveIcon className="w-4 h-4" />, category: 'Mode' },
+    { id: 'extract', title: 'Switch to Extract', icon: <FileArchive className="w-4 h-4" />, category: 'Mode' },
+    { id: 'speed', title: 'Optimization: Speed', icon: <ZapIcon className="w-4 h-4 text-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]" />, category: 'Settings' },
+    { id: 'balanced', title: 'Optimization: Balanced', icon: <Activity className="w-4 h-4 text-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]" />, category: 'Settings' },
+    { id: 'maximum', title: 'Optimization: Maximum', icon: <Layers className="w-4 h-4 text-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.3)]" />, category: 'Settings' },
+    { id: 'history', title: 'Open Operations Hub', icon: <History className="w-4 h-4" />, category: 'Tools' },
+    { id: 'wipe', title: 'Wipe All Local Data', icon: <Trash2 className="w-4 h-4 text-red-500" />, category: 'Danger' },
+    { id: 'theme', title: 'Toggle Matrix Theme', icon: <Sparkles className="w-4 h-4 text-cyan-400" />, category: 'Display' },
+  ];
+
+  const filtered = commands.filter(c => 
+    c.title.toLowerCase().includes(query.toLowerCase()) || 
+    c.category.toLowerCase().includes(query.toLowerCase())
+  );
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-[400] flex items-start justify-center pt-[15vh] px-4 pointer-events-none">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={onClose}
+            className="absolute inset-0 bg-black/70 backdrop-blur-xl pointer-events-auto"
+          />
+          <motion.div
+            initial={{ scale: 0.95, opacity: 0, y: -20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.95, opacity: 0, y: -20 }}
+            className={cn(
+              "relative w-full max-w-2xl rounded-[3rem] border shadow-[0_50px_100px_rgba(0,0,0,0.8)] pointer-events-auto overflow-hidden",
+              isDarkMode ? "bg-[#050507]/90 border-white/10" : "bg-white border-gray-200"
+            )}
+          >
+            <div className="p-8 border-b border-white/5 flex items-center gap-6 bg-white/[0.02]">
+               <div className="w-10 h-10 rounded-2xl bg-cyan-500/10 flex items-center justify-center animate-shimmer bg-[linear-gradient(90deg,transparent,rgba(6,182,212,0.1),transparent)] bg-[length:200%_100%]">
+                 <Search className="w-5 h-5 text-cyan-500" />
+               </div>
+               <input 
+                 ref={inputRef}
+                 type="text"
+                 value={query}
+                 onChange={(e) => setQuery(e.target.value)}
+                 placeholder="Search matrix commands..."
+                 className="flex-1 bg-transparent border-none focus:ring-0 text-xl font-black tracking-tight placeholder:text-white/10 text-white"
+               />
+               <div className="flex items-center gap-2">
+                 <div className="px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-[10px] font-mono font-black text-white/40">ESC</div>
+               </div>
+            </div>
+            
+            <div className="max-h-[450px] overflow-y-auto p-4 custom-scrollbar bg-black/20">
+              {filtered.length === 0 ? (
+                <div className="p-12 text-center flex flex-col items-center gap-4">
+                   <AlertCircle className="w-12 h-12 text-gray-800" />
+                   <p className="text-gray-600 font-black uppercase tracking-[0.2em] italic">No matrix sectors found.</p>
+                </div>
+              ) : (
+                <div className="space-y-6 p-2">
+                  {(['Mode', 'Settings', 'Tools', 'Display', 'Danger'] as const).map(cat => {
+                    const items = filtered.filter(i => i.category === cat);
+                    if (items.length === 0) return null;
+                    return (
+                      <div key={cat} className="space-y-2">
+                        <div className="flex items-center gap-4 px-3 mb-2">
+                          <h5 className="text-[10px] font-black uppercase tracking-[0.4em] text-cyan-500/60">{cat}</h5>
+                          <div className="flex-1 h-[1px] bg-cyan-500/10" />
+                        </div>
+                        <div className="grid grid-cols-1 gap-1">
+                          {items.map(item => (
+                            <button
+                              key={item.id}
+                              onClick={() => {
+                                onAction(item.id);
+                                onClose();
+                              }}
+                              className="w-full flex items-center justify-between p-4 rounded-2xl hover:bg-white/[0.04] active:scale-[0.98] group transition-all text-left border border-transparent hover:border-white/5"
+                            >
+                              <div className="flex items-center gap-5">
+                                <div className="w-12 h-12 rounded-2xl bg-white/[0.03] border border-white/5 flex items-center justify-center group-hover:scale-110 transition-all duration-500 group-hover:border-cyan-500/30">
+                                  {item.icon}
+                                </div>
+                                <div>
+                                  <span className="text-sm font-black text-white group-hover:text-cyan-400 transition-colors tracking-tight">{item.title}</span>
+                                  <p className="text-[9px] font-mono text-gray-500 mt-0.5 uppercase tracking-widest">{item.category} Module</p>
+                                </div>
+                              </div>
+                              <ArrowRight className="w-4 h-4 text-gray-800 opacity-0 group-hover:opacity-100 group-hover:translate-x-2 transition-all" />
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            
+            <div className="p-5 bg-[#050507] border-t border-white/5 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                 <div className="flex items-center gap-2">
+                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                   <span className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">Interface: Active</span>
+                 </div>
+                 <div className="h-3 w-[1px] bg-white/10" />
+                 <div className="flex items-center gap-2">
+                    <Terminal className="w-3.5 h-3.5 text-cyan-500" />
+                    <span className="text-[9px] font-mono text-gray-600 uppercase tracking-widest">WASM Kernel v2.0</span>
+                 </div>
+              </div>
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-3">
+                   <div className="flex gap-1.5 grow-0">
+                     <div className="w-3.5 h-3.5 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[7px] font-bold text-gray-500">↑</div>
+                     <div className="w-3.5 h-3.5 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[7px] font-bold text-gray-500">↓</div>
+                   </div>
+                   <span className="text-[9px] font-black text-gray-700 uppercase tracking-tighter">Navigate</span>
+                </div>
+                <div className="flex items-center gap-3">
+                   <div className="w-8 h-4 rounded-md bg-white/5 border border-white/10 flex items-center justify-center text-[7px] font-bold text-gray-500">ENTER</div>
+                   <span className="text-[9px] font-black text-gray-700 uppercase tracking-tighter">Execute</span>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+
