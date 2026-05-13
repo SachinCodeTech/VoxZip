@@ -5,11 +5,35 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   
-  --color-brand-primary: #00f2ff;
-  --color-brand-secondary: #7000ff;
-  --color-surface-900: #0a0a0c;
-  --color-surface-800: #141417;
-  --color-surface-700: #1c1c21;
+  --color-brand-primary: var(--accent, #00f2ff);
+  --color-brand-secondary: var(--accent-secondary, #7000ff);
+  --color-surface-900: var(--bg-deep, #0a0a0c);
+  --color-surface-800: var(--bg-card, #141417);
+  --color-surface-700: var(--bg-hover, #1c1c21);
+}
+
+[data-theme='midnight'] {
+  --accent: #3b82f6;
+  --accent-secondary: #0ea5e9;
+  --bg-deep: #020617;
+  --bg-card: #0f172a;
+  --bg-hover: #1e293b;
+}
+
+[data-theme='emerald'] {
+  --accent: #10b981;
+  --accent-secondary: #059669;
+  --bg-deep: #022c22;
+  --bg-card: #064e3b;
+  --bg-hover: #065f46;
+}
+
+[data-theme='sunset'] {
+  --accent: #f59e0b;
+  --accent-secondary: #ec4899;
+  --bg-deep: #1c1917;
+  --bg-card: #292524;
+  --bg-hover: #44403c;
 }
 
 @layer base {
@@ -28,4 +52,81 @@
 
 .gradient-text {
   @apply text-transparent bg-clip-text bg-gradient-to-r from-brand-primary to-brand-secondary;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-white/10 rounded-full;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  @apply bg-cyan-500/30;
+}
+
+@keyframes matrix-scroll {
+  from { background-position: 0 0; }
+  to { background-position: 50px 50px; }
+}
+
+.animate-matrix-scroll {
+  animation: matrix-scroll 2s linear infinite;
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+.bg-scan-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(to bottom, transparent, rgba(6, 182, 212, 0.2), transparent);
+  animation: scan-line 2s linear infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite linear;
+}
+
+@keyframes spin-reverse {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(-360deg); }
+}
+
+.animate-spin-reverse {
+  animation: spin-reverse 4s linear infinite;
+}
+
+/* Global scrollbar styles */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface-900;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-white/5 rounded-full border-2 border-surface-900 transition-colors;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-white/10;
 }

@@ -34,7 +34,11 @@ import {
   FileText,
   Image as ImageIcon,
   Video,
-  Music
+  Music,
+  Activity,
+  Layers,
+  Cpu,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { saveAs } from 'file-saver';
@@ -52,6 +56,7 @@ interface FileItem {
   compressedSize?: number;
   errorMessage?: string;
   dateAdded: number;
+  path: string; // Internal path in archive
 }
 
 interface OperationSummary {
@@ -62,7 +67,29 @@ interface OperationSummary {
   fileCount: number;
   status: 'success' | 'failure';
   details?: string;
+  hint?: string;
 }
+
+const Tooltip = ({ text, children }: { text: string, children: React.ReactNode }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative inline-block" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      <AnimatePresence>
+        {show && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 5 }}
+            className="absolute z-[300] bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 rounded-lg bg-black/90 border border-white/10 text-[9px] font-bold text-white w-48 text-center backdrop-blur-md shadow-2xl pointer-events-none"
+          >
+            {text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 const getFileIcon = (fileName: string) => {
   const ext = fileName.split('.').pop()?.toLowerCase();
@@ -100,6 +127,91 @@ const getFileIcon = (fileName: string) => {
 type Mode = 'compress' | 'extract';
 type CompressionLevel = 'fast' | 'normal' | 'ultra';
 
+const CircularProgress = ({ progress, size = 120, strokeWidth = 12, isDarkMode = true }: { progress: number, size?: number, strokeWidth?: number, isDarkMode?: boolean }) => {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const offset = circumference - (progress / 100) * circumference;
+
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={isDarkMode ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.05)"}
+          strokeWidth={strokeWidth}
+          fill="transparent"
+        />
+        <motion.circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="url(#gradient)"
+          strokeWidth={strokeWidth}
+          fill="transparent"
+          strokeDasharray={circumference}
+          initial={{ strokeDashoffset: circumference }}
+          animate={{ strokeDashoffset: offset }}
+          transition={{ duration: 0.5, ease: "easeInOut" }}
+          strokeLinecap="round"
+        />
+        <defs>
+          <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stopColor="#06b6d4" />
+            <stop offset="100%" stopColor="#8b5cf6" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <div className="absolute flex flex-col items-center justify-center">
+        <span className="text-2xl font-black tracking-tighter">{Math.round(progress)}%</span>
+        <span className="text-[8px] font-black uppercase tracking-widest text-gray-500">Processing</span>
+      </div>
+    </div>
+  );
+};
+
+const BackgroundParticles = ({ isDarkMode }: { isDarkMode: boolean }) => {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
+      <svg className="w-full h-full opacity-30">
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+          <feMerge>
+            <feMergeNode in="coloredBlur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+        {[...Array(25)].map((_, i) => (
+          <motion.circle
+            key={i}
+            r={Math.random() * 2 + 1}
+            fill={isDarkMode ? (i % 2 === 0 ? "#22d3ee" : "#8b5cf6") : (i % 2 === 0 ? "#0891b2" : "#7c3aed")}
+            initial={{ 
+              x: Math.random() * 100 + "%", 
+              y: Math.random() * 100 + "%",
+              opacity: Math.random() * 0.5 + 0.2
+            }}
+            animate={{ 
+              x: [null, Math.random() * 100 + "%"],
+              y: [null, Math.random() * 100 + "%"],
+              opacity: [0.2, 0.6, 0.2]
+            }}
+            transition={{ 
+              duration: Math.random() * 20 + 20, 
+              repeat: Infinity, 
+              ease: "linear" 
+            }}
+            style={{ filter: "url(#glow)" }}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+};
+
+const APP_VERSION = '1.0.0';
+
 export default function App() {
   const [isLaunching, setIsLaunching] = useState(true);
   const [activeView, setActiveView] = useState<'home' | 'about' | 'info' | 'privacy'>('home');
@@ -107,22 +219,143 @@ export default function App() {
   const [showAbout, setShowAbout] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<{name: string, size: number}[] | null>(null);
-  const [history, setHistory] = useState<OperationSummary[]>([]);
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const [history, setHistory] = useState<OperationSummary[]>(() => {
+    const saved = localStorage.getItem('voxzip-history');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return parsed.map((h: any) => ({
+          ...h,
+          timestamp: new Date(h.timestamp)
+        }));
+      } catch (e) {
+        return [];
+      }
+    }
+    return [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('voxzip-history', JSON.stringify(history));
+  }, [history]);
   const [showHistory, setShowHistory] = useState(false);
   const [mode, setMode] = useState<Mode>('compress');
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
   const [password, setPassword] = useState('');
+  const [passwordHint, setPasswordHint] = useState('');
   const [encryptionMethod, setEncryptionMethod] = useState<'aes' | 'zipCrypto'>('aes');
   const [level, setLevel] = useState<CompressionLevel>('normal');
   const [zip64, setZip64] = useState(true);
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  type Theme = 'cyberpunk' | 'midnight' | 'emerald' | 'sunset';
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('voxzip-theme') as Theme) || 'cyberpunk');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('voxzip-theme', theme);
+  }, [theme]);
+
+  const isDarkMode = true; // VoxZip is essentially always dark-themed but with different accent color palettes
   const [archiveName, setArchiveName] = useState('archive.zip');
   const [isNameModified, setIsNameModified] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
-  const [sortBy, setSortBy] = useState<'name' | 'size' | 'date'>('date');
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [processedBytes, setProcessedBytes] = useState(0);
+  const lastProcessedRef = useRef<number>(0);
+  const [sortBy, setSortBy] = useState<'name' | 'size' | 'date' | 'type'>('date');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  interface UserPreset {
+    id: string;
+    name: string;
+    level: CompressionLevel;
+    zip64: boolean;
+    encryptionMethod: 'aes' | 'zipCrypto';
+    password?: string;
+  }
+  const [userPresets, setUserPresets] = useState<UserPreset[]>(() => {
+    const saved = localStorage.getItem('voxzip-user-presets');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [presetName, setPresetName] = useState('');
+
+  useEffect(() => {
+    localStorage.setItem('voxzip-user-presets', JSON.stringify(userPresets));
+  }, [userPresets]);
+
+  const savePreset = () => {
+    if (!presetName.trim()) return;
+    const newPreset: UserPreset = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: presetName,
+      level,
+      zip64,
+      encryptionMethod,
+      password: password || undefined
+    };
+    setUserPresets(prev => [...prev, newPreset]);
+    setPresetName('');
+  };
+
+  const deletePreset = (id: string) => {
+    setUserPresets(prev => prev.filter(p => p.id !== id));
+  };
+
+  const applyOptimization = (opt: 'fast' | 'normal' | 'ultra') => {
+    setLevel(opt);
+    if (opt === 'fast') {
+      setZip64(false);
+      setEncryptionMethod('zipCrypto');
+    } else if (opt === 'normal') {
+      setZip64(true);
+      setEncryptionMethod('aes');
+    } else if (opt === 'ultra') {
+      setZip64(true);
+      setEncryptionMethod('aes');
+    }
+  };
+
+  const applyPreset = (preset: UserPreset) => {
+    setLevel(preset.level);
+    setZip64(preset.zip64);
+    setEncryptionMethod(preset.encryptionMethod);
+    if (preset.password) setPassword(preset.password);
+  };
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === files.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(files.map(f => f.id)));
+    }
+  };
+
+  useEffect(() => {
+    // Sync selection when files are removed or search/filter changes
+    const currentFileIds = new Set(files.map(f => f.id));
+    setSelectedIds(prev => {
+      const next = new Set<string>();
+      prev.forEach(id => {
+        if (currentFileIds.has(id)) next.add(id);
+      });
+      return next;
+    });
+  }, [files]);
+
   const [fileFilter, setFileFilter] = useState<'all' | 'images' | 'docs' | 'archives' | 'other'>('all');
   const [showBatchRename, setShowBatchRename] = useState(false);
   const [renamePrefix, setRenamePrefix] = useState('');
@@ -217,22 +450,60 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  useEffect(() => {
+    let interval: any;
+    if (isProcessing && startTime) {
+      interval = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isProcessing, startTime]);
+
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
   };
 
-  const onDrop = useCallback((e: React.DragEvent) => {
+  const onDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (isProcessing) return;
-    const droppedFiles = Array.from(e.dataTransfer.files) as File[];
+
+    const items = e.dataTransfer.items;
+    const droppedFiles: {file: File, path: string}[] = [];
+
+    const traverseFileTree = async (item: any, path = "") => {
+      if (item.isFile) {
+        const file = await new Promise<File>((resolve) => item.file(resolve));
+        droppedFiles.push({ file, path: path + file.name });
+      } else if (item.isDirectory) {
+        const dirReader = item.createReader();
+        const entries = await new Promise<any[]>((resolve) => dirReader.readEntries(resolve));
+        for (const entry of entries) {
+          await traverseFileTree(entry, path + item.name + "/");
+        }
+      }
+    };
+
+    if (items) {
+      const promises = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i].webkitGetAsEntry();
+        if (item) {
+          promises.push(traverseFileTree(item));
+        }
+      }
+      await Promise.all(promises);
+    } else {
+      droppedFiles.push(...Array.from(e.dataTransfer.files).map((f: File) => ({ file: f, path: f.name })));
+    }
     
     // Auto-detect extraction mode if archive files are dropped
-    const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz'];
-    const hasArchive = droppedFiles.some(f => {
-      const ext = f.name.split('.').pop()?.toLowerCase();
-      return archiveExtensions.includes(ext || '');
+    const archiveExtensions = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz', 'tbz2', 'tar.gz', 'tar.bz2'];
+    const hasArchive = (droppedFiles as {file: File, path: string}[]).some(f => {
+      const name = f.file.name.toLowerCase();
+      return archiveExtensions.some(ext => name.endsWith(ext));
     });
 
     if (hasArchive && mode === 'compress') {
@@ -249,7 +520,7 @@ export default function App() {
   };
 
   const exportHistoryCSV = () => {
-    const headers = ['ID', 'Type', 'Timestamp', 'Filename', 'Count', 'Status', 'Details'];
+    const headers = ['ID', 'Type', 'Timestamp', 'Filename', 'Count', 'Status', 'Details', 'Hint'];
     const rows = history.map(h => [
       h.id,
       h.type,
@@ -257,21 +528,29 @@ export default function App() {
       `"${h.fileName}"`,
       h.fileCount,
       h.status,
-      `"${h.details || ''}"`
+      `"${h.details || ''}"`,
+      `"${h.hint || ''}"`
     ]);
     const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     saveAs(blob, 'voxzip-history.csv');
   };
 
-  const addFiles = (newFiles: File[]) => {
-    const fileItems: FileItem[] = newFiles.map(f => ({
-      id: Math.random().toString(36).substr(2, 9),
-      file: f,
-      progress: 0,
-      status: 'idle',
-      dateAdded: Date.now()
-    }));
+  const addFiles = (newFiles: (File | {file: File, path: string})[]) => {
+    const fileItems: FileItem[] = newFiles.map(f => {
+      const isObject = 'file' in f;
+      const fileObj = isObject ? f.file : f;
+      const filePath = isObject ? f.path : f.name;
+      
+      return {
+        id: Math.random().toString(36).substr(2, 9),
+        file: fileObj,
+        path: filePath,
+        progress: 0,
+        status: 'idle',
+        dateAdded: Date.now()
+      };
+    });
     setFiles(prev => [...prev, ...fileItems]);
   };
 
@@ -287,6 +566,14 @@ export default function App() {
 
   const getSortedFiles = () => {
     let filtered = [...files];
+    
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(item => 
+        item.file.name.toLowerCase().includes(query) || 
+        (item.path && item.path.toLowerCase().includes(query))
+      );
+    }
     
     if (fileFilter !== 'all') {
       filtered = filtered.filter(item => {
@@ -310,6 +597,10 @@ export default function App() {
         comparison = a.file.size - b.file.size;
       } else if (sortBy === 'date') {
         comparison = a.dateAdded - b.dateAdded;
+      } else if (sortBy === 'type') {
+        const extA = a.file.name.split('.').pop()?.toLowerCase() || '';
+        const extB = b.file.name.split('.').pop()?.toLowerCase() || '';
+        comparison = extA.localeCompare(extB);
       }
       return sortOrder === 'asc' ? comparison : -comparison;
     });
@@ -418,6 +709,9 @@ export default function App() {
     setIsProcessing(true);
     setShowProgress(true);
     setOverallProgress(0);
+    setStartTime(Date.now());
+    setElapsed(0);
+    setProcessedBytes(0);
 
     try {
       const blobWriter = new zip.BlobWriter('application/zip');
@@ -436,7 +730,8 @@ export default function App() {
         const item = files[i];
         setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'processing' } : f));
         
-        await zipWriter.add(item.file.name, new zip.BlobReader(item.file), {
+        lastProcessedRef.current = 0;
+        await zipWriter.add(item.path || item.file.name, new zip.BlobReader(item.file), {
           level: levelMap[level],
           // @ts-ignore
           encryptionMethod: password ? encryptionMethod : undefined,
@@ -444,6 +739,11 @@ export default function App() {
             const p = (current / total) * 100;
             const totalP = (i / files.length) * 100 + (p / files.length);
             setOverallProgress(Math.min(totalP, 99));
+            
+            const delta = current - lastProcessedRef.current;
+            lastProcessedRef.current = current;
+            setProcessedBytes(prev => prev + delta);
+
             setFiles(prev => prev.map(f => f.id === item.id ? { ...f, progress: p } : f));
           }
         });
@@ -459,9 +759,14 @@ export default function App() {
         timestamp: new Date(),
         fileName: archiveName.endsWith('.zip') ? archiveName : `${archiveName}.zip`,
         fileCount: files.length,
-        status: 'success'
+        status: 'success',
+        hint: passwordHint || undefined
       };
       setHistory(prev => [summary, ...prev]);
+      
+      if (passwordHint) {
+        localStorage.setItem(`voxzip-hint-${summary.id}`, passwordHint);
+      }
 
       const totalOriginalSize = files.reduce((acc, f) => acc + f.file.size, 0);
       setFiles(prev => prev.map(f => ({
@@ -498,11 +803,14 @@ export default function App() {
   };
 
   // Extraction Logic
-  const extractFiles = async () => {
+  const extractFiles = async (targetHandle?: FileSystemDirectoryHandle) => {
     if (files.length === 0) return;
     setIsProcessing(true);
     setShowProgress(true);
     setOverallProgress(0);
+    setStartTime(Date.now());
+    setElapsed(0);
+    setProcessedBytes(0);
 
     try {
       for (let archiveIdx = 0; archiveIdx < files.length; archiveIdx++) {
@@ -521,16 +829,36 @@ export default function App() {
               const entry = entries[i] as any;
               if (entry.getData && !entry.directory) {
                 try {
+                  lastProcessedRef.current = 0;
                   const content = await entry.getData(new zip.BlobWriter(), {
                     password: password || undefined,
                     onprogress: (current: number, total: number) => {
                       const p = (current / total) * 100;
                       const globalP = (archiveIdx / files.length) * 100 + (p / files.length);
                       setOverallProgress(Math.min(globalP, 99));
+
+                      const delta = current - lastProcessedRef.current;
+                      lastProcessedRef.current = current;
+                      setProcessedBytes(prev => prev + delta);
+
                       setFiles(prev => prev.map(f => f.id === item.id ? { ...f, progress: p } : f));
                     }
                   });
-                  saveAs(content, entry.filename);
+
+                  if (targetHandle) {
+                    const pathParts = entry.filename.split('/');
+                    let currentDir = targetHandle;
+                    for (let j = 0; j < pathParts.length - 1; j++) {
+                      currentDir = await currentDir.getDirectoryHandle(pathParts[j], { create: true });
+                    }
+                    const fileHandle = await currentDir.getFileHandle(pathParts[pathParts.length - 1], { create: true });
+                    const writable = await (fileHandle as any).createWritable();
+                    await writable.write(content);
+                    await writable.close();
+                  } else {
+                    saveAs(content, entry.filename);
+                  }
+                  setProcessedBytes(prev => prev + content.size);
                 } catch (e: any) {
                   const msg = e.message?.toLowerCase() || '';
                   if (msg.includes('password') || msg.includes('decrypt')) {
@@ -549,18 +877,27 @@ export default function App() {
             const archive = await LibArchive.open(archiveFile);
             const obj = await archive.extractFiles();
             
-            const downloadFiles = async (data: any, path = '') => {
+            const downloadFiles = async (data: any, path = '', dirHandle?: FileSystemDirectoryHandle) => {
               for (const key in data) {
                 const innerItem = data[key];
                 if (innerItem instanceof File) {
-                   saveAs(innerItem, key);
+                  if (dirHandle) {
+                    const fileHandle = await dirHandle.getFileHandle(key, { create: true });
+                    const writable = await (fileHandle as any).createWritable();
+                    await writable.write(innerItem);
+                    await writable.close();
+                  } else {
+                    saveAs(innerItem, key);
+                  }
+                  setProcessedBytes(prev => prev + innerItem.size);
                 } else if (typeof innerItem === 'object') {
-                  await downloadFiles(innerItem, `${path}${key}/`);
+                  const nextDir = dirHandle ? await dirHandle.getDirectoryHandle(key, { create: true }) : undefined;
+                  await downloadFiles(innerItem, `${path}${key}/`, nextDir);
                 }
               }
             };
             
-            await downloadFiles(obj);
+            await downloadFiles(obj, '', targetHandle);
           }
           setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'completed', progress: 100 } : f));
         } catch (e: any) {
@@ -595,6 +932,145 @@ export default function App() {
       setIsProcessing(false);
     }
   };
+
+  const handleExtractToFolder = async () => {
+    try {
+      // @ts-ignore
+      if (!window.showDirectoryPicker) {
+        return extractFiles();
+      }
+      // @ts-ignore
+      const handle = await window.showDirectoryPicker();
+      await extractFiles(handle as FileSystemDirectoryHandle);
+    } catch (e: any) {
+      if (e.name !== 'AbortError') {
+        alert(`Extraction Aborted: ${e.message}`);
+      }
+    }
+  };
+
+  const verifyArchive = async (item: FileItem, silent = false) => {
+    if (!silent) setIsVerifying(true);
+    try {
+      const ext = item.file.name.split('.').pop()?.toLowerCase();
+      if (ext === 'zip') {
+        const zipReader = new zip.ZipReader(new zip.BlobReader(item.file));
+        const entries = await zipReader.getEntries();
+        let corrupted = false;
+        
+        for (const entry of entries) {
+          if (!entry.directory) {
+            try {
+              // @ts-ignore
+              await entry.getData(new zip.Uint8ArrayWriter(), {
+                password: password || undefined
+              });
+            } catch (e) {
+              corrupted = true;
+              break;
+            }
+          }
+        }
+        await zipReader.close();
+        
+        if (corrupted) {
+          if (!silent) alert(`Integrity Check Failed: ${item.file.name} appears corrupted or password protected.`);
+          return false;
+        } else {
+          if (!silent) alert(`Integrity Verified: ${item.file.name} is healthy.`);
+          return true;
+        }
+      } else {
+        // Universal verify via LibArchive
+        // @ts-ignore
+        const archive = await LibArchive.open(item.file);
+        // @ts-ignore
+        const entries = await archive.getFilesArray();
+        if (entries && entries.length > 0) {
+          if (!silent) alert(`Integrity Verified: ${item.file.name} is healthy. (Scanned ${entries.length} items)`);
+          return true;
+        } else {
+          throw new Error('Empty or invalid archive structure.');
+        }
+      }
+    } catch (e: any) {
+      if (!silent) alert(`Verification Error: ${e.message || 'Archive structure invalid or password required.'}`);
+      return false;
+    } finally {
+      if (!silent) setIsVerifying(false);
+    }
+  };
+
+  const verifyAllArchives = async () => {
+    const targets = selectedIds.size > 0 
+      ? files.filter(f => selectedIds.has(f.id))
+      : files;
+    
+    if (targets.length === 0) return;
+    
+    setIsVerifying(true);
+    let successCount = 0;
+    let failCount = 0;
+
+    // Use a small concurrency limit to avoid crashing the browser with too many parallel WASM instances or large memory reads
+    const concurrencyLimit = 3;
+    const results: boolean[] = [];
+    
+    for (let i = 0; i < targets.length; i += concurrencyLimit) {
+      const chunk = targets.slice(i, i + concurrencyLimit);
+      const chunkResults = await Promise.all(chunk.map(item => verifyArchive(item, true)));
+      results.push(...chunkResults);
+    }
+
+    successCount = results.filter(Boolean).length;
+    failCount = results.length - successCount;
+
+    setIsVerifying(false);
+    alert(`Batch Verification Complete:\n✅ Healthy: ${successCount}\n❌ Failed/Corrupted: ${failCount}`);
+  };
+
+  const previewArchive = async (item: FileItem) => {
+    setIsProcessing(true);
+    try {
+      const ext = item.file.name.split('.').pop()?.toLowerCase();
+      if (ext === 'zip') {
+        const zipReader = new zip.ZipReader(new zip.BlobReader(item.file));
+        const entries = await zipReader.getEntries();
+        setPreviewFiles(entries.filter(e => !e.directory).map(e => ({ name: e.filename, size: e.uncompressedSize || 0 })));
+        await zipReader.close();
+      } else {
+        // @ts-ignore
+        const archive = await LibArchive.open(item.file);
+        // @ts-ignore
+        const entries = await archive.getFilesArray();
+        setPreviewFiles(entries.map((e: any) => ({ name: e.path, size: e.size || 0 })));
+      }
+      setIsPreviewing(true);
+    } catch (e: any) {
+      alert(`Preview Error: ${e.message}`);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const totalSize = files.reduce((acc, f) => acc + f.file.size, 0);
+  const fileTypeDistribution = files.reduce((acc: Record<string, number>, item) => {
+    const ext = item.file.name.split('.').pop()?.toLowerCase() || 'other';
+    const category = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext) ? 'Images' :
+                     ['pdf', 'doc', 'docx', 'txt', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext) ? 'Docs' :
+                     ['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'iso'].includes(ext) ? 'Archives' :
+                     ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext) ? 'Media' : 'Other';
+    acc[category] = (acc[category] || 0) + 1;
+    return acc;
+  }, {});
+
+  const getEstimatedSize = () => {
+    if (mode === 'extract') return totalSize;
+    const ratio = level === 'ultra' ? 0.35 : level === 'normal' ? 0.5 : 0.7;
+    return totalSize * ratio;
+  };
+
+  const estimatedSize = getEstimatedSize();
 
   return (
     <div className={cn(
@@ -636,6 +1112,14 @@ export default function App() {
                 >
                   VOXZIP
                 </motion.h2>
+                <motion.span 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.5 }}
+                  className="text-[10px] font-mono font-black text-gray-600 absolute -bottom-4 right-0"
+                >
+                  v{APP_VERSION}
+                </motion.span>
               </div>
               
               <div className="relative w-56 h-1 bg-white/5 rounded-full overflow-hidden">
@@ -661,6 +1145,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Enhanced Background Mesh */}
+      <BackgroundParticles isDarkMode={isDarkMode} />
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
         <div className={cn(
           "absolute -top-[10%] -left-[10%] w-[60%] h-[60%] rounded-full blur-[140px] transition-all duration-1000",
@@ -685,14 +1170,37 @@ export default function App() {
             <Zap className="w-5 h-5 text-white fill-white" />
           </div>
           <div className="flex flex-col">
-            <h1 className="text-base sm:text-lg font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
-              VOXZIP
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base sm:text-lg font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500 leading-none">
+                VOXZIP
+              </h1>
+              <span className="text-[8px] font-mono font-bold text-gray-500 bg-white/5 border border-white/5 px-1.5 py-0.5 rounded-full leading-none mb-0.5">V{APP_VERSION}</span>
+            </div>
             <p className="hidden sm:block text-[8px] text-gray-500 font-mono uppercase tracking-[0.2em] leading-none mt-1">High Performance</p>
           </div>
         </div>
         
           <div className="flex items-center gap-1.5">
+            <div className={cn(
+              "hidden md:flex items-center gap-1 p-1 rounded-xl border mr-2",
+              isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+            )}>
+              {(['cyberpunk', 'midnight', 'emerald', 'sunset'] as Theme[]).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTheme(t)}
+                  className={cn(
+                    "w-6 h-6 rounded-lg border transition-all",
+                    theme === t ? "border-cyan-500 scale-110 shadow-lg" : "border-transparent opacity-50 hover:opacity-100",
+                    t === 'cyberpunk' ? "bg-cyan-500" :
+                    t === 'midnight' ? "bg-blue-600" :
+                    t === 'emerald' ? "bg-emerald-500" : "bg-amber-500"
+                  )}
+                  title={`Enforce ${t} Matrix`}
+                />
+              ))}
+            </div>
+
             {isInstallable && (
               <button 
                 onClick={handleInstallClick}
@@ -760,8 +1268,8 @@ export default function App() {
           </button>
 
           <button 
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            onClick={() => setTheme(theme === 'cyberpunk' ? 'midnight' : 'cyberpunk')}
+            title="Toggle Next Gen Interface"
             className={cn(
               "p-2.5 rounded-xl transition-all duration-300 border hover:shadow-lg",
               isDarkMode 
@@ -769,7 +1277,7 @@ export default function App() {
                 : "bg-white border-gray-200 text-gray-600 shadow-sm"
             )}
           >
-            {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            {theme === 'cyberpunk' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
           </button>
         </div>
       </header>
@@ -884,102 +1392,69 @@ export default function App() {
               className="grid grid-cols-1 lg:grid-cols-12 gap-8"
             >
               <div className="lg:col-span-12 xl:col-span-8 flex flex-col gap-6">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className={cn(
-                    "flex gap-1 p-1 rounded-2xl border transition-colors",
-                    isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-100 border-gray-200"
-                  )}>
-                    <button 
-                      onClick={() => { setMode('compress'); setFiles([]); }}
-                      className={cn(
-                        "px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 flex items-center gap-2",
-                        mode === 'compress' 
-                          ? (isDarkMode ? "bg-white/10 text-white shadow-xl ring-1 ring-white/20" : "bg-white text-gray-900 shadow-sm") 
-                          : "text-gray-500 hover:text-gray-300"
-                      )}
-                    >
-                      <ArchiveIcon className="w-4 h-4" />
-                      Compress
-                    </button>
-                    <button 
-                      onClick={() => { setMode('extract'); setFiles([]); }}
-                      className={cn(
-                        "px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300 flex items-center gap-2",
-                        mode === 'extract' 
-                          ? (isDarkMode ? "bg-white/10 text-white shadow-xl ring-1 ring-white/20" : "bg-white text-gray-900 shadow-sm") 
-                          : "text-gray-500 hover:text-gray-300"
-                      )}
-                    >
-                      <FileArchive className="w-4 h-4" />
-                      Extract
-                    </button>
-                  </div>
-
-                  {files.length > 0 && (
-                    <div className="flex flex-col gap-3 w-full">
-                      <div className="flex flex-wrap items-center justify-between gap-4">
-                        <div className="flex items-center gap-2">
-                           <div className={cn(
-                            "flex items-center gap-1 p-1 rounded-xl border",
-                            isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
-                          )}>
-                            {(['date', 'name', 'size'] as const).map(s => (
-                              <button 
-                                key={s}
-                                onClick={() => {
-                                  if (sortBy === s) setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
-                                  else setSortBy(s);
-                                }}
-                                title={`Sort by ${s}`}
-                                className={cn(
-                                  "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all",
-                                  sortBy === s ? "bg-cyan-500 text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
-                                )}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-
-                          <button 
-                            onClick={() => setShowBatchRename(true)}
-                            title="Batch Rename Files"
-                            className="text-[10px] font-black text-cyan-500 hover:text-cyan-400 transition-colors uppercase tracking-widest bg-cyan-500/10 px-4 py-2.5 rounded-xl border border-cyan-500/20"
-                          >
-                            Batch Rename
-                          </button>
-
-                          <button 
-                            onClick={clearFiles}
-                            title="Clear All Files"
-                            className="text-[10px] font-black text-red-500 hover:text-red-400 transition-colors uppercase tracking-widest bg-red-500/10 px-4 py-2.5 rounded-xl border border-red-500/20"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 mr-1" />
-                            Clear
-                          </button>
-                        </div>
-
-                        <div className={cn(
-                          "flex items-center gap-1 p-1 rounded-xl border",
-                          isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
-                        )}>
-                          {(['all', 'images', 'docs', 'archives', 'other'] as const).map(f => (
-                            <button
-                               key={f}
-                               onClick={() => setFileFilter(f)}
-                               title={`Filter by ${f}`}
-                               className={cn(
-                                 "px-2.5 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-tighter transition-all",
-                                 fileFilter === f ? "bg-purple-500 text-white shadow-lg" : "text-gray-500 hover:text-gray-300"
-                               )}
-                            >
-                              {f}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div className={cn(
+                      "flex gap-1 p-1 rounded-2xl border transition-colors",
+                      isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-100 border-gray-200"
+                    )}>
+                      <button 
+                        onClick={() => { setMode('compress'); setFiles([]); }}
+                        className={cn(
+                          "px-6 py-2.5 rounded-xl text-sm font-black uppercase tracking-tight transition-all duration-300 flex items-center gap-2 relative overflow-hidden",
+                          mode === 'compress' 
+                            ? (isDarkMode ? "bg-white/10 text-white shadow-[0_0_20px_rgba(34,211,238,0.2)] ring-1 ring-white/20" : "bg-white text-gray-900 shadow-md") 
+                            : (isDarkMode ? "text-gray-400 hover:text-white hover:bg-white/5" : "text-gray-500 hover:text-gray-900 hover:bg-gray-200/50")
+                        )}
+                      >
+                        <ArchiveIcon className={cn("w-4 h-4", mode === 'compress' ? "text-cyan-400" : "text-gray-500")} />
+                        Compress
+                      </button>
+                      <button 
+                        onClick={() => { setMode('extract'); setFiles([]); }}
+                        className={cn(
+                          "px-6 py-2.5 rounded-xl text-sm font-black uppercase tracking-tight transition-all duration-300 flex items-center gap-2 relative overflow-hidden",
+                          mode === 'extract' 
+                            ? (isDarkMode ? "bg-white/10 text-white shadow-[0_0_20px_rgba(168,85,247,0.2)] ring-1 ring-white/20" : "bg-white text-gray-900 shadow-md") 
+                            : (isDarkMode ? "text-gray-400 hover:text-white hover:bg-white/5" : "text-gray-500 hover:text-gray-900 hover:bg-gray-200/50")
+                        )}
+                      >
+                        <FileArchive className={cn("w-4 h-4", mode === 'extract' ? "text-purple-400" : "text-gray-500")} />
+                        Extract
+                      </button>
                     </div>
-                  )}
+
+                    <div className="flex items-center gap-1.5">
+                      <div className={cn(
+                        "hidden md:flex items-center gap-1 p-1 rounded-xl border mr-2",
+                        isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                      )}>
+                        {(['cyberpunk', 'midnight', 'emerald', 'sunset'] as Theme[]).map(t => (
+                          <button
+                            key={t}
+                            onClick={() => setTheme(t)}
+                            className={cn(
+                              "w-6 h-6 rounded-lg border transition-all",
+                              theme === t ? "border-cyan-500 scale-110 shadow-lg" : "border-transparent opacity-50 hover:opacity-100",
+                              t === 'cyberpunk' ? "bg-cyan-500" :
+                              t === 'midnight' ? "bg-blue-600" :
+                              t === 'emerald' ? "bg-emerald-500" : "bg-amber-500"
+                            )}
+                            title={`Enforce ${t} Matrix`}
+                          />
+                        ))}
+                      </div>
+
+                      {isInstallable && (
+                        <button 
+                          onClick={handleInstallClick}
+                          className="px-4 py-2.5 rounded-xl bg-orange-500/10 border border-orange-500/20 text-orange-500 text-[10px] font-black uppercase tracking-widest hover:bg-orange-500/20 transition-all"
+                        >
+                          Install PWA
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
             <motion.div 
@@ -987,9 +1462,8 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               onDragOver={onDragOver}
               onDrop={onDrop}
-              onClick={() => !isProcessing && fileInputRef.current?.click()}
               className={cn(
-                "relative group h-48 rounded-[2rem] border-2 border-dashed flex flex-col items-center justify-center gap-2 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
+                "relative group h-64 rounded-[2rem] border-2 border-dashed flex flex-col items-center justify-center gap-6 cursor-pointer transition-all duration-500 overflow-hidden backdrop-blur-md",
                 isDarkMode 
                   ? "border-white/10 bg-white/[0.02] hover:border-cyan-500/40 hover:bg-cyan-500/[0.04]" 
                   : "border-gray-200 bg-white/40 hover:border-cyan-500/40 hover:bg-cyan-50 shadow-sm",
@@ -1004,23 +1478,64 @@ export default function App() {
                 multiple={mode === 'compress'} 
               />
               
-              <div className={cn(
-                "w-12 h-12 rounded-[1.2rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
-                isDarkMode ? "bg-white/5 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
-              )}>
-                <Upload className="w-6 h-6 text-cyan-500" />
-              </div>
-              
-              <div className="text-center px-4">
-                <p className={cn(
-                  "text-base font-black tracking-tight",
-                  isDarkMode ? "text-gray-200" : "text-gray-700"
+              <div className="flex flex-col items-center gap-3">
+                <div className={cn(
+                  "w-16 h-16 rounded-[1.5rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
+                  isDarkMode ? "bg-white/5 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
                 )}>
-                  {mode === 'compress' ? 'DROP FILES TO PACK' : 'DROP TO EXTRACT'}
-                </p>
-                <p className="text-[10px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase">
-                  {(mode === 'compress' ? 'Multiple Files Supported' : 'Auto-Detection Active')}
-                </p>
+                  <Upload className="w-8 h-8 text-cyan-500" />
+                </div>
+                
+                <div className="text-center px-4">
+                  <p className={cn(
+                    "text-lg font-black tracking-tight",
+                    isDarkMode ? "text-gray-200" : "text-gray-700"
+                  )}>
+                    {mode === 'compress' ? 'DROP PAYLOAD HERE' : 'DROP TO EXTRACT'}
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase">
+                    {(mode === 'compress' ? 'Files or Folders' : 'Auto-Detection Active')}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 z-10" onClick={(e) => e.stopPropagation()}>
+                <button 
+                  onClick={() => {
+                    const input = fileInputRef.current;
+                    if (input) {
+                      // @ts-ignore
+                      input.webkitdirectory = false;
+                      input.multiple = true;
+                      input.click();
+                    }
+                  }}
+                  className={cn(
+                    "px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                    isDarkMode ? "bg-white/5 border-white/10 hover:bg-white/10" : "bg-white border-gray-200 hover:bg-gray-50 shadow-sm"
+                  )}
+                >
+                  Select Files
+                </button>
+                {mode === 'compress' && (
+                  <button 
+                    onClick={() => {
+                      const input = fileInputRef.current;
+                      if (input) {
+                        // @ts-ignore
+                        input.webkitdirectory = true;
+                        input.multiple = true;
+                        input.click();
+                      }
+                    }}
+                    className={cn(
+                      "px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                      isDarkMode ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-500 hover:bg-cyan-500/20" : "bg-cyan-50 border-cyan-200 text-cyan-600 hover:bg-cyan-100 shadow-sm"
+                    )}
+                  >
+                    Select Folder
+                  </button>
+                )}
               </div>
 
                   {isProcessing && (
@@ -1033,13 +1548,200 @@ export default function App() {
                   )}
                 </motion.div>
 
+                <AnimatePresence>
+                  {files.length === 0 && history.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="space-y-4"
+                    >
+                      <div className="flex items-center justify-between px-1">
+                        <h2 className="text-[10px] font-black text-gray-500 uppercase tracking-[0.2em]">Recent Streams</h2>
+                        <button 
+                          onClick={() => setHistory([])}
+                          className="text-[9px] font-black text-red-500/60 hover:text-red-500 uppercase tracking-widest transition-colors"
+                        >
+                          Wipe History
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {history.slice(0, 4).map(item => (
+                          <div 
+                            key={item.id}
+                            className={cn(
+                              "p-4 rounded-3xl border backdrop-blur-md flex items-center justify-between group hover:border-cyan-500/30 transition-all duration-500",
+                              isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className={cn(
+                                "w-10 h-10 rounded-2xl flex items-center justify-center border",
+                                item.type === 'compress' 
+                                  ? (isDarkMode ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-500" : "bg-cyan-50 border-cyan-200 text-cyan-600")
+                                  : (isDarkMode ? "bg-purple-500/10 border-purple-500/20 text-purple-500" : "bg-purple-50 border-purple-200 text-purple-600")
+                              )}>
+                                {item.type === 'compress' ? <ArchiveIcon className="w-5 h-5" /> : <FileArchive className="w-5 h-5" />}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-[11px] font-black tracking-tight truncate max-w-[120px]">{item.fileName}</p>
+                                <p className="text-[8px] text-gray-500 font-mono font-bold uppercase">
+                                  {item.fileCount} Files • {item.timestamp.toLocaleDateString()}
+                                </p>
+                                {item.hint && (
+                                  <div className="mt-1 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <Lock className="w-2.5 h-2.5 text-emerald-500" />
+                                    <Tooltip text={`Hint: ${item.hint}`}>
+                                      <p className="text-[7px] text-emerald-500 font-black uppercase tracking-widest cursor-help">Hint Available</p>
+                                    </Tooltip>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div className={cn(
+                              "w-1.5 h-1.5 rounded-full",
+                              item.status === 'success' ? "bg-emerald-500" : "bg-red-500"
+                            )} />
+                          </div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {files.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="grid grid-cols-1 md:grid-cols-4 gap-3"
+                    >
+                      <div className={cn(
+                        "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between",
+                        isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
+                      )}>
+                        <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest leading-none mb-2">Payload Total</p>
+                        <p className="text-xl font-black tracking-tighter leading-none">{formatBytes(totalSize)}</p>
+                      </div>
+                      <div className={cn(
+                        "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between border-cyan-500/10",
+                        isDarkMode ? "bg-cyan-500/5" : "bg-cyan-50/60"
+                      )}>
+                        <p className="text-[9px] font-black text-cyan-500 uppercase tracking-widest leading-none mb-2">{mode === 'compress' ? 'Target Est.' : 'Native Size'}</p>
+                        <p className="text-xl font-black tracking-tighter leading-none">{formatBytes(estimatedSize)}</p>
+                      </div>
+                      <div className={cn(
+                        "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between",
+                        isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
+                      )}>
+                        <p className="text-[9px] font-black text-gray-500 uppercase tracking-widest leading-none mb-2">File Count</p>
+                        <p className="text-xl font-black tracking-tighter leading-none">{files.length}</p>
+                      </div>
+                      <div className={cn(
+                        "p-4 rounded-3xl border backdrop-blur-md transition-all h-full flex flex-col justify-between",
+                        isDarkMode ? "bg-white/[0.03] border-white/5" : "bg-white/60 border-gray-100 shadow-sm"
+                      )}>
+                        <p className="text-[9px] font-black text-emerald-500 uppercase tracking-widest leading-none mb-2">Efficiency</p>
+                        <p className="text-xl font-black tracking-tighter leading-none">
+                          {mode === 'compress' ? `${Math.round((1 - (estimatedSize / totalSize)) * 100)}%` : '100%'}
+                        </p>
+                      </div>
+
+                      <div className="md:col-span-4 flex flex-wrap items-center justify-between gap-4 pt-1">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div className={cn(
+                            "flex items-center gap-1 p-1 rounded-xl border",
+                            isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-200"
+                          )}>
+                            {(['date', 'name', 'size', 'type'] as const).map(s => (
+                              <button 
+                                key={s}
+                                onClick={() => {
+                                  if (sortBy === s) setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                                  else setSortBy(s);
+                                }}
+                                title={`Sort by ${s}`}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all",
+                                  sortBy === s ? "bg-cyan-500 text-white shadow-lg" : "text-gray-500 hover:text-cyan-400"
+                                )}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+
+                          <button 
+                            onClick={toggleSelectAll}
+                            className={cn(
+                              "px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all",
+                              selectedIds.size === files.length && files.length > 0
+                                ? "bg-cyan-500 text-white border-cyan-400"
+                                : "text-gray-500 bg-white/5 border-white/5 hover:bg-white/10"
+                            )}
+                          >
+                            {selectedIds.size === files.length && files.length > 0 ? 'Deselect All' : 'Select All'}
+                          </button>
+
+                          {mode === 'extract' && (
+                            <button 
+                              onClick={verifyAllArchives}
+                              disabled={isProcessing || isVerifying}
+                              className={cn(
+                                "text-[10px] font-black transition-all uppercase tracking-widest px-4 py-2.5 rounded-xl border flex items-center gap-2",
+                                selectedIds.size > 0 
+                                  ? "bg-emerald-500 text-white border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.3)]" 
+                                  : "text-emerald-500 bg-emerald-500/10 border-emerald-500/20 hover:bg-emerald-500/20"
+                              )}
+                            >
+                              {isVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                              {selectedIds.size > 0 ? `Verify Selected (${selectedIds.size})` : 'Verify All'}
+                            </button>
+                          )}
+
+                          <button 
+                            onClick={() => setShowBatchRename(true)}
+                            title="Batch Rename Files"
+                            className="text-[10px] font-black text-cyan-500 hover:text-cyan-400 transition-colors uppercase tracking-widest bg-cyan-500/10 px-4 py-2.5 rounded-xl border border-cyan-500/20"
+                          >
+                            Batch Rename
+                          </button>
+
+                          <button 
+                            onClick={clearFiles}
+                            title="Clear All Files"
+                            className="text-[10px] font-black text-red-500 hover:text-red-400 transition-colors uppercase tracking-widest bg-red-500/10 px-4 py-2.5 rounded-xl border border-red-500/20 flex items-center gap-2"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Clear
+                          </button>
+                        </div>
+
+                        <div className="relative flex-1 max-w-xs group">
+                          <Settings2 className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500 group-hover:text-cyan-500 transition-colors" />
+                          <input 
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="SEARCH PAYLOAD..."
+                            className={cn(
+                              "w-full rounded-2xl pl-10 pr-4 py-2 text-[10px] font-black uppercase tracking-widest focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                              isDarkMode ? "bg-white/[0.03] border-white/10 text-white" : "bg-gray-100 border-gray-200"
+                            )}
+                          />
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 <AnimatePresence mode="popLayout">
                   {files.length > 0 && (
                     <motion.div 
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.95 }}
-                      className="grid grid-cols-1 md:grid-cols-2 gap-4"
+                      className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[600px] overflow-y-auto custom-scrollbar pr-2 py-1"
                     >
                       {getSortedFiles().map(item => (
                         <motion.div 
@@ -1052,9 +1754,22 @@ export default function App() {
                             "group relative rounded-2xl p-2.5 flex items-center gap-2.5 border transition-all duration-500 backdrop-blur-md overflow-hidden",
                             isDarkMode 
                               ? "bg-white/[0.03] border-white/5 hover:border-cyan-500/30 hover:bg-white/[0.05]" 
-                              : "bg-white/60 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200"
+                              : "bg-white/60 border-gray-100 shadow-sm hover:shadow-md hover:border-gray-200",
+                            selectedIds.has(item.id) && (isDarkMode ? "bg-cyan-500/10 border-cyan-500/40" : "bg-cyan-50 border-cyan-200 shadow-inner")
                           )}
                         >
+                          <div 
+                            onClick={() => toggleSelection(item.id)}
+                            className={cn(
+                              "w-5 h-5 rounded flex items-center justify-center border cursor-pointer shrink-0 transition-all",
+                              selectedIds.has(item.id) 
+                                ? "bg-cyan-500 border-cyan-500 text-white" 
+                                : "bg-white/5 border-white/10"
+                            )}
+                          >
+                            {selectedIds.has(item.id) && <CheckCircle2 className="w-3.5 h-3.5" />}
+                          </div>
+
                           <div className={cn(
                             "w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-transform duration-500 group-hover:scale-105",
                             isDarkMode ? "bg-white/5 border border-white/5" : "bg-gray-100"
@@ -1064,8 +1779,7 @@ export default function App() {
                              item.status === 'error' ? <AlertCircle className="w-4 h-4 text-red-500" /> :
                              getFileIcon(item.file.name)}
                           </div>
-                          
-                          <div className="flex-1 min-w-0 group-hover:pr-10 transition-all duration-300">
+                                                 <div className="flex-1 min-w-0 group-hover:pr-14 transition-all duration-300">
                             {editingFileId === item.id ? (
                               <input 
                                 autoFocus
@@ -1085,12 +1799,42 @@ export default function App() {
                                 }}
                                 className="text-[11px] font-black truncate tracking-tight cursor-text hover:text-cyan-400 transition-colors"
                               >
-                                {item.file.name}
+                                {item.path && item.path.includes('/') ? (
+                                  <span className="flex items-center gap-1">
+                                    <span className="text-gray-500 font-mono text-[9px] font-bold opacity-60">{item.path.split('/').slice(0, -1).join('/')}/</span>
+                                    {item.file.name}
+                                  </span>
+                                ) : item.file.name}
                               </h4>
                             )}
                             <div className="flex items-center gap-1.5 mt-0.5">
-                              <p className="text-[9px] text-gray-500 font-mono font-bold uppercase">{formatBytes(item.file.size)}</p>
-                              {item.compressedSize && (
+                              <span className="text-[9px] font-mono font-bold text-gray-500 bg-white/5 px-2 py-0.5 rounded-md">
+                                {formatBytes(item.file.size)}
+                              </span>
+                              <span className="text-[8px] font-mono font-black text-gray-400 bg-white/5 border border-white/5 px-1.5 py-0.5 rounded uppercase leading-none opacity-60">
+                                {item.file.name.split('.').pop() || 'N/A'}
+                              </span>
+                              {item.status === 'processing' && (
+                                <div className="flex items-center gap-1">
+                                  <Loader2 className="w-3 h-3 text-cyan-400 animate-spin" />
+                                  <span className="text-[8px] font-black text-cyan-400 uppercase tracking-tighter">Syncing...</span>
+                                </div>
+                              )}
+                              {item.status === 'completed' && (
+                                <div className="flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                  <span className="text-[8px] font-black text-emerald-500 uppercase tracking-tighter">Verified</span>
+                                </div>
+                              )}
+                              {item.status === 'error' && (
+                                <Tooltip text={item.errorMessage || "System Breach Detected"}>
+                                  <div className="flex items-center gap-1 cursor-help">
+                                    <AlertCircle className="w-3 h-3 text-red-500 animate-pulse" />
+                                    <span className="text-[8px] font-black text-red-500 uppercase tracking-tighter underline decoration-dotted">Critical Failure</span>
+                                  </div>
+                                </Tooltip>
+                              )}
+                              {item.compressedSize && item.status === 'completed' && (
                                 <>
                                   <div className="w-0.5 h-0.5 rounded-full bg-gray-600" />
                                   <p className="text-[9px] text-cyan-500 font-black uppercase tracking-tighter">
@@ -1112,6 +1856,25 @@ export default function App() {
                                   <Eye className="w-3.5 h-3.5" />
                                 </button>
                               )}
+                              {mode === 'extract' && (
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => previewArchive(item)}
+                                    className="p-1.5 rounded-lg hover:bg-cyan-500/10 text-cyan-400 transition-colors"
+                                    title="Preview Archive Contents"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    disabled={isVerifying}
+                                    onClick={() => verifyArchive(item)}
+                                    className="p-1.5 rounded-lg hover:bg-emerald-500/10 text-emerald-400 transition-colors"
+                                    title="Verify Integrity"
+                                  >
+                                    {isVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                                  </button>
+                                </div>
+                              )}
                               <button 
                                 onClick={() => removeFile(item.id)}
                                 title="Remove File From List"
@@ -1130,25 +1893,107 @@ export default function App() {
 
               <div className={cn(
                 "lg:col-span-12 xl:col-span-4",
-                "fixed inset-0 z-[100] xl:relative xl:inset-auto transition-all duration-500 xl:translate-y-0 xl:opacity-100",
+                "fixed inset-0 z-[200] xl:relative xl:inset-auto transition-all duration-500 xl:translate-y-0 xl:opacity-100",
                 isConfigOpen ? "translate-y-0 opacity-100 visible" : "translate-y-full opacity-0 invisible xl:visible xl:opacity-100 xl:translate-y-0"
               )}>
                 <div className={cn(
-                  "flex flex-col gap-5 h-full xl:h-auto xl:sticky xl:top-24 p-4 xl:p-0",
+                  "flex flex-col h-full xl:h-auto xl:sticky xl:top-24",
                   isDarkMode ? "bg-[#050507] xl:bg-transparent" : "bg-white xl:bg-transparent"
                 )}>
-                  <div className="flex xl:hidden items-center justify-between mb-2">
-                    <h2 className="font-black text-xl tracking-tighter">CONFIGURATION</h2>
-                    <button onClick={() => setIsConfigOpen(false)} className="p-2 border border-white/10 rounded-xl"><X className="w-6 h-6" /></button>
-                  </div>
+                          <div className="flex xl:hidden items-center justify-between p-6 pb-2">
+                             <h2 className="font-black text-xl tracking-tighter uppercase">Configuration</h2>
+                             <button 
+                               onClick={() => setIsConfigOpen(false)} 
+                               className={cn(
+                                 "p-2 rounded-xl border transition-all",
+                                 isDarkMode ? "bg-white/5 border-white/10" : "bg-gray-100 border-gray-200"
+                               )}
+                             >
+                               <X className="w-6 h-6" />
+                             </button>
+                           </div>
+
+                           <div className="px-4 xl:px-0 space-y-4">
+                             <div className={cn(
+                               "rounded-[2rem] p-5 border backdrop-blur-xl",
+                               isDarkMode ? "bg-white/[0.03] border-white/10" : "bg-white border-gray-100 shadow-sm"
+                             )}>
+                               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 mb-3 block">Matrix Optimization</label>
+                               <div className="grid grid-cols-3 gap-2 mb-4">
+                                 {[
+                                   { name: 'SPEED', level: 'fast', icon: <Zap className="w-3 h-3" /> },
+                                   { name: 'BALANCED', level: 'normal', icon: <Activity className="w-3 h-3" /> },
+                                   { name: 'MAXIMUM', level: 'ultra', icon: <Layers className="w-3 h-3" /> }
+                                 ].map(p => (
+                                   <button
+                                     key={p.name}
+                                     onClick={() => applyOptimization(p.level as any)}
+                                     className={cn(
+                                       "flex flex-col items-center justify-center gap-1.5 p-3 rounded-2xl border transition-all duration-300",
+                                       level === p.level 
+                                         ? "bg-cyan-500 border-cyan-400 text-white shadow-lg scale-105" 
+                                         : "bg-white/5 border-white/5 text-gray-500 hover:border-white/10"
+                                     )}
+                                   >
+                                     {p.icon}
+                                     <span className="text-[8px] font-black">{p.name}</span>
+                                   </button>
+                                 ))}
+                               </div>
+
+                               <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 mb-3 block">Personal Matrixes</label>
+                               <div className="flex gap-2 mb-4">
+                                 <input 
+                                   value={presetName}
+                                   onChange={(e) => setPresetName(e.target.value)}
+                                   placeholder="PRESET NAME..."
+                                   className={cn(
+                                     "flex-1 rounded-xl px-3 py-2 text-[10px] font-black uppercase tracking-widest focus:outline-none border transition-all",
+                                     isDarkMode ? "bg-white/5 border-white/5" : "bg-gray-50 border-gray-100"
+                                   )}
+                                 />
+                                 <button 
+                                   onClick={savePreset}
+                                   className="px-3 py-2 rounded-xl bg-cyan-500 text-white text-[10px] font-black uppercase tracking-widest shadow-md hover:scale-105 active:scale-95 transition-all"
+                                 >
+                                   SAVE
+                                 </button>
+                               </div>
+                               <div className="grid grid-cols-2 gap-2">
+                                 {userPresets.map(p => (
+                                   <div key={p.id} className="relative group">
+                                     <button
+                                       onClick={() => applyPreset(p)}
+                                       className={cn(
+                                         "w-full text-left p-2 rounded-xl border text-[9px] font-black uppercase tracking-widest transition-all",
+                                         isDarkMode ? "bg-white/5 border-white/5 hover:border-cyan-500/30" : "bg-gray-50 border-gray-100 hover:border-cyan-500/30"
+                                       )}
+                                     >
+                                       {p.name}
+                                     </button>
+                                     <button 
+                                       onClick={() => deletePreset(p.id)}
+                                       className="absolute top-1 right-1 p-1 rounded-lg bg-red-500/10 text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                                     >
+                                       <X className="w-2.5 h-2.5" />
+                                     </button>
+                                   </div>
+                                 ))}
+                                 {userPresets.length === 0 && (
+                                   <p className="col-span-2 text-center py-2 text-[9px] text-gray-500 font-bold uppercase italic opacity-50 underline decoration-dotted">No custom matrixes found</p>
+                                 )}
+                               </div>
+                             </div>
+                           </div>
                   
-                  <div className="flex-1 overflow-y-auto custom-scrollbar xl:overflow-visible">
+                  <div className="flex-1 overflow-y-auto custom-scrollbar xl:max-h-[calc(100vh-160px)] px-4 xl:px-0 pb-32 xl:pb-0">
                     <motion.div 
+                      key={mode}
                       initial={{ opacity: 0, x: 20 }}
                       animate={{ opacity: 1, x: 0 }}
                       className={cn(
-                        "rounded-[2.5rem] p-5 flex flex-col gap-5 border shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] relative overflow-visible backdrop-blur-2xl transition-all duration-500",
-                        isDarkMode ? "bg-white/[0.03] border-white/10" : "bg-white/60 border-gray-100"
+                        "rounded-[2.5rem] p-6 flex flex-col gap-6 border shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] relative overflow-visible backdrop-blur-2xl transition-all duration-500",
+                        isDarkMode ? "bg-white/[0.03] border-white/10" : "bg-white/60 border-gray-100 shadow-sm"
                       )}
                     >
                     <div className="flex items-center gap-3">
@@ -1162,31 +2007,82 @@ export default function App() {
                     </div>
 
                     {mode === 'compress' ? (
-                      <div className="space-y-5">
-                        <div className="space-y-2.5">
-                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1">Compression Engine</label>
-                          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-white/5 border border-white/5">
+                       <div className="space-y-5">
+                        <div className="space-y-4">
+                           <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                            Presets (Automatic Bridge)
+                           </label>
+                           <div className="grid grid-cols-3 gap-2">
+                             {[
+                               { id: 'speed', level: 'fast', zip64: false, label: 'Speed' },
+                               { id: 'balance', level: 'normal', zip64: true, label: 'Standard' },
+                               { id: 'max', level: 'ultra', zip64: true, label: 'Max' }
+                             ].map(preset => (
+                               <button
+                                 key={preset.id}
+                                 onClick={() => {
+                                   setLevel(preset.level as CompressionLevel);
+                                   setZip64(preset.zip64);
+                                 }}
+                                 className={cn(
+                                   "py-2 rounded-xl text-[9px] font-black uppercase tracking-tighter border transition-all",
+                                   level === preset.level && zip64 === preset.zip64
+                                     ? "bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.15)]"
+                                     : "bg-white/[0.03] border-white/5 text-gray-500 hover:border-white/10 hover:text-gray-300"
+                                 )}
+                               >
+                                 {preset.label}
+                               </button>
+                             ))}
+                           </div>
+                        </div>
+
+                        <div className="space-y-4 pt-1">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                            <span className="flex items-center gap-1.5">
+                              Compression Level
+                              <Tooltip text="Fast: Minimal compression, high speed. Normal: Balanced. Ultra: Maximum space saving but heavier on CPU.">
+                                <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-500 cursor-help" />
+                              </Tooltip>
+                            </span>
+                            <span className={cn(
+                              "text-[9px] font-black uppercase tracking-tighter",
+                              level === 'ultra' ? "text-purple-500" : level === 'normal' ? "text-cyan-500" : "text-emerald-500"
+                            )}>
+                              {level === 'ultra' ? 'High Entropy' : level === 'normal' ? 'Balanced' : 'High Speed'}
+                            </span>
+                          </label>
+                          <div className="flex gap-2 p-1.5 rounded-2xl bg-white/[0.03] border border-white/5">
                             {(['fast', 'normal', 'ultra'] as const).map(l => (
                               <button
                                 key={l}
                                 disabled={isProcessing}
                                 onClick={() => setLevel(l)}
                                 className={cn(
-                                  "py-2 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all duration-300",
+                                  "flex-1 py-3 rounded-xl text-[10px] font-black uppercase tracking-tighter transition-all duration-500 relative flex flex-col items-center gap-1",
                                   level === l 
-                                    ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" 
-                                    : (isDarkMode ? "text-gray-500 hover:bg-white/5" : "bg-gray-100 border-transparent text-gray-500 hover:bg-gray-200")
+                                    ? "bg-gradient-to-br from-cyan-500 to-purple-600 text-white shadow-lg" 
+                                    : (isDarkMode ? "text-gray-500 hover:text-gray-300 hover:bg-white/5" : "bg-gray-50 text-gray-500 hover:bg-gray-100")
                                 )}
                               >
                                 {l}
+                                {level === l && (
+                                  <motion.div 
+                                    layoutId="level-indicator"
+                                    className="absolute -bottom-1 w-1 h-1 rounded-full bg-white shadow-[0_0_10px_white]"
+                                  />
+                                )}
                               </button>
                             ))}
                           </div>
                         </div>
 
                         <div className="space-y-2.5">
-                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center gap-1.5">
                             Advanced Bridge
+                            <Tooltip text="ZIP64 allows support for archives larger than 4GB. Disable only for compatibility with legacy (pre-2000) ZIP readers.">
+                              <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-500 cursor-help" />
+                            </Tooltip>
                           </label>
                           <div className="p-3.5 rounded-2xl bg-white/[0.03] border border-white/5 flex items-center justify-between group hover:border-cyan-500/30 transition-all">
                             <div className="flex items-center gap-3">
@@ -1212,10 +2108,13 @@ export default function App() {
                         </div>
 
                         <div className="space-y-2.5">
-                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
+                          <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center gap-1.5">
                             <span>Archive ID</span>
+                            <Tooltip text="The filename of the generated archive. VoxZip will preserve folder structures internally.">
+                              <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-500 cursor-help" />
+                            </Tooltip>
                             {password && (
-                              <div className="flex items-center gap-1 text-emerald-500 animate-pulse">
+                              <div className="flex items-center gap-1 text-emerald-500 animate-pulse ml-auto">
                                 <ShieldCheck className="w-3 h-3" />
                                 <span className="text-[8px] font-black tracking-tighter">SECURED</span>
                               </div>
@@ -1247,6 +2146,9 @@ export default function App() {
                           <label className="text-[10px] font-black text-gray-500 uppercase tracking-widest ml-1 flex items-center justify-between">
                             <span className="flex items-center gap-2">
                               <Lock className="w-3 h-3" /> SECURITY KEY
+                              <Tooltip text="Archives are encrypted using AES-256 (standard) or ZipCrypto (legacy). Keep this safe as VoxZip cannot recover lost keys.">
+                                <HelpCircle className="w-3 h-3 text-gray-600 hover:text-cyan-500 cursor-help" />
+                              </Tooltip>
                             </span>
                             {strength && (
                                <span className={cn("text-[9px] font-black uppercase tracking-tighter", strength.color)}>
@@ -1254,25 +2156,50 @@ export default function App() {
                                </span>
                             )}
                           </label>
-                          <div className="relative group/pass">
-                            <input 
-                              type={showPassword ? "text" : "password"} 
-                              disabled={isProcessing}
-                              value={password}
-                              onChange={(e) => setPassword(e.target.value)}
-                              className={cn(
-                                "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border pr-12 shadow-inner",
-                                isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                          <div className="space-y-3">
+                            <div className="relative group/pass">
+                              <input 
+                                type={showPassword ? "text" : "password"} 
+                                disabled={isProcessing}
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className={cn(
+                                  "w-full rounded-2xl px-4 py-3 text-xs font-black placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border pr-12 shadow-inner",
+                                  isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                                )}
+                                placeholder="ENCRYPTION PASSWORD"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowPassword(!showPassword)}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl text-gray-500 hover:text-cyan-500 transition-colors"
+                              >
+                                {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+                            
+                            <AnimatePresence>
+                              {password && (
+                                <motion.div
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  className="space-y-2"
+                                >
+                                  <input 
+                                    type="text"
+                                    value={passwordHint}
+                                    onChange={(e) => setPasswordHint(e.target.value)}
+                                    placeholder="PASSWORD HINT (LOCAL STORAGE ONLY)"
+                                    className={cn(
+                                      "w-full rounded-xl px-4 py-2.5 text-[10px] font-black uppercase tracking-widest placeholder:text-gray-700 focus:outline-none focus:ring-1 focus:ring-cyan-500/40 transition-all border",
+                                      isDarkMode ? "bg-white/[0.03] border-white/5 text-white" : "bg-gray-50 border-gray-100 text-gray-900"
+                                    )}
+                                  />
+                                  <p className="text-[8px] text-gray-500 font-bold px-1">* Hint will be saved in your browser history for this archive.</p>
+                                </motion.div>
                               )}
-                              placeholder="ENCRYPTION PASSWORD"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowPassword(!showPassword)}
-                              className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-xl text-gray-500 hover:text-cyan-500 transition-colors"
-                            >
-                              {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                            </button>
+                            </AnimatePresence>
                           </div>
                           {password && (
                             <div className="flex flex-col gap-2">
@@ -1312,55 +2239,176 @@ export default function App() {
                       </div>
                     )}
 
-                    <button 
-                      disabled={files.length === 0 || isProcessing}
-                      onClick={mode === 'compress' ? compressFiles : extractFiles}
-                      className={cn(
-                        "w-full py-4 rounded-[1.5rem] font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2.5 transition-all duration-500 relative overflow-hidden group/btn",
-                        files.length === 0 || isProcessing
-                          ? (isDarkMode ? "bg-white/5 text-gray-700 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
-                          : "bg-gradient-to-r from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.02] active:scale-95 shadow-[0_20px_40px_-10px_rgba(6,182,212,0.3)]"
-                      )}
-                    >
-                      {isProcessing ? (
-                         <Loader2 className="w-4 h-4 animate-spin text-white" />
-                      ) : (
-                        <>
-                          <span className="relative z-10">{mode === 'compress' ? 'GENERATE ARCHIVE' : 'EXTRACT DATA'}</span>
-                          <ArrowRight className="w-4 h-4 relative z-10 transition-transform group-hover/btn:translate-x-1" />
-                          <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
-                        </>
-                      )}
-                    </button>
+                      <div className="flex flex-col gap-3">
+                        <button 
+                          disabled={files.length === 0 || isProcessing}
+                          onClick={mode === 'compress' ? compressFiles : handleExtractToFolder}
+                          className={cn(
+                            "w-full py-5 rounded-[2rem] font-black text-sm uppercase tracking-[0.2em] flex items-center justify-center gap-3 transition-all duration-700 relative overflow-hidden group/btn shadow-[0_20px_50px_-10px_rgba(6,182,212,0.4)]",
+                            files.length === 0 || isProcessing
+                              ? (isDarkMode ? "bg-white/5 text-gray-700 border border-white/5 cursor-not-allowed" : "bg-gray-100 text-gray-400 cursor-not-allowed")
+                              : "bg-gradient-to-tr from-cyan-500 via-blue-600 to-purple-600 text-white hover:scale-[1.03] active:scale-95 ring-1 ring-white/20 hover:ring-white/40"
+                          )}
+                        >
+                          <div className="absolute inset-0 bg-[radial-gradient(circle_at_var(--x)_var(--y),rgba(255,255,255,0.2),transparent)] opacity-0 group-hover/btn:opacity-100 transition-opacity duration-300" 
+                               style={{ "--x": "50%", "--y": "50%" } as any} />
+                          {isProcessing ? (
+                             <div className="flex items-center gap-3">
+                               <Loader2 className="w-5 h-5 animate-spin text-white" />
+                               <span className="relative z-10 animate-pulse">Initializing Matrix...</span>
+                             </div>
+                          ) : (
+                            <>
+                              <span className="relative z-10">{mode === 'compress' ? 'Assemble Archive' : (
+                                // @ts-ignore
+                                window.showDirectoryPicker ? 'Extract to Target' : 'Decompile Data'
+                              )}</span>
+                              <Activity className="w-5 h-5 relative z-10 transition-transform group-hover/btn:rotate-90 duration-500" />
+                              <div className="absolute inset-0 bg-white/10 opacity-0 group-hover/btn:opacity-100 transition-opacity" />
+                            </>
+                          )}
+                        </button>
+
+                        {mode === 'extract' && (
+                          <button
+                            disabled={files.length === 0 || isProcessing}
+                            onClick={() => extractFiles()}
+                            className={cn(
+                              "w-full py-3 rounded-2xl font-black text-[10px] uppercase tracking-[0.3em] flex items-center justify-center gap-2 transition-all border group",
+                              isDarkMode ? "bg-white/5 border-white/10 text-gray-400 hover:text-white hover:bg-white/10" : "bg-gray-50 border-gray-100 text-gray-500"
+                            )}
+                          >
+                            <Download className="w-3.5 h-3.5 transition-transform group-hover:-translate-y-0.5" />
+                            Direct Sequential Output
+                          </button>
+                        )}
+                      </div>
                   </motion.div>
 
                   <AnimatePresence>
                     {showProgress && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.9 }}
-                        className={cn(
-                          "rounded-3xl p-6 border shadow-2xl",
-                          isDarkMode ? "bg-[#0c0c0e] border-cyan-500/30" : "bg-white border-cyan-500/30"
-                        )}
-                      >
-                        <div className="flex items-center justify-between mb-4">
-                          <span className="text-sm font-bold">{Math.round(overallProgress)}% Complete</span>
-                          <div className="w-8 h-8 rounded-full border-2 border-cyan-500/20 border-t-cyan-500 animate-spin" />
-                        </div>
-                        
-                        <div className={cn(
-                          "h-3 rounded-full overflow-hidden p-0.5",
-                          isDarkMode ? "bg-white/5" : "bg-gray-100"
-                        )}>
-                          <motion.div 
-                            className="h-full rounded-full bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600"
-                            initial={{ width: 0 }}
-                            animate={{ width: `${overallProgress}%` }}
-                          />
-                        </div>
-                      </motion.div>
+                      <div className="fixed bottom-0 left-0 right-0 z-[200] p-6 lg:p-12 pointer-events-none">
+                        <motion.div 
+                          initial={{ y: 200, opacity: 0, scale: 0.95 }}
+                          animate={{ y: 0, opacity: 1, scale: 1 }}
+                          exit={{ y: 200, opacity: 0, scale: 0.95 }}
+                          className="max-w-4xl mx-auto bg-[#050507]/90 backdrop-blur-3xl border border-white/10 rounded-[3rem] p-8 lg:p-10 shadow-[0_40px_120px_-20px_rgba(0,0,0,0.9)] pointer-events-auto overflow-hidden relative group"
+                        >
+                          <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-cyan-500 to-transparent opacity-50" />
+                          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_-20%,rgba(6,182,212,0.1),transparent)] pointer-events-none" />
+                          
+                          <div className="flex flex-col md:flex-row items-center justify-between gap-8 mb-10">
+                            <div className="flex items-center gap-6">
+                              <div className="w-20 h-20 rounded-3xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center relative overflow-hidden group/icon">
+                                 <motion.div 
+                                   animate={{ rotate: 360 }}
+                                   transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
+                                   className="absolute inset-0 border-2 border-dashed border-cyan-500/10 rounded-full scale-150"
+                                 />
+                                 <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
+                                 <div className="absolute inset-0 bg-scan-line pointer-events-none opacity-20" />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-3">
+                                  <h3 className="text-base font-black uppercase tracking-[0.5em] text-white">Quantum Matrix Assembly</h3>
+                                  <div className="flex gap-1">
+                                    {[1, 2, 3].map(i => (
+                                      <motion.div 
+                                        key={i}
+                                        animate={{ opacity: [0.3, 1, 0.3] }}
+                                        transition={{ duration: 1.5, repeat: Infinity, delay: i * 0.2 }}
+                                        className="h-1.5 w-1.5 rounded-full bg-cyan-500"
+                                      />
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-4 mt-3">
+                                  <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
+                                    <Zap className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+                                    <span>{elapsed > 0 ? formatBytes(processedBytes / elapsed) : '---'}/s</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
+                                    <Layers className="w-3.5 h-3.5 text-cyan-500" />
+                                    <span>{files.length} Clusters</span>
+                                  </div>
+                                  <div className="hidden sm:flex items-center gap-2 text-[10px] font-mono text-gray-500 uppercase tracking-widest bg-white/5 border border-white/5 px-3 py-1.5 rounded-full">
+                                    <Cpu className="w-3.5 h-3.5 text-purple-500" />
+                                    <span>Direct IO</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="flex flex-col items-end">
+                              <div className="flex items-baseline gap-2">
+                                <motion.span 
+                                  className="text-6xl font-black font-mono text-white tracking-tighter"
+                                  key={Math.round(overallProgress)}
+                                  initial={{ y: 5, opacity: 0.5 }}
+                                  animate={{ y: 0, opacity: 1 }}
+                                >
+                                  {Math.round(overallProgress)}
+                                </motion.span>
+                                <span className="text-xl font-black text-cyan-500 mb-1">%</span>
+                              </div>
+                              <div className="flex items-center gap-2 mt-2">
+                                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                <span className="text-[10px] font-black text-gray-500 uppercase tracking-[0.4em]">Structural Synchronization</span>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-6">
+                            <div className="h-3 bg-white/5 rounded-full overflow-hidden relative group/bar">
+                              <motion.div 
+                                className="h-full bg-gradient-to-r from-cyan-400 via-blue-600 to-purple-600 relative z-10"
+                                animate={{ width: `${overallProgress}%` }}
+                                transition={{ type: 'spring', damping: 30, stiffness: 70 }}
+                              >
+                                <div className="absolute top-0 left-0 w-full h-[1px] bg-white/30" />
+                              </motion.div>
+                              <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.05)_50%,transparent_75%)] bg-[length:50px_50px] animate-matrix-scroll opacity-30" />
+                            </div>
+                            
+                            <div className="grid grid-cols-3 gap-8 pt-2">
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Data Buffer</span>
+                                  <span className="text-[9px] font-mono text-cyan-500/70">8.4 GB/S</span>
+                                </div>
+                                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div animate={{ width: ['20%', '80%', '40%'] }} transition={{ duration: 4, repeat: Infinity }} className="h-full bg-cyan-500/30" />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Entropy Filter</span>
+                                  <span className="text-[9px] font-mono text-purple-500/70">Lvl 9 Active</span>
+                                </div>
+                                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div animate={{ width: ['60%', '30%', '90%'] }} transition={{ duration: 3, repeat: Infinity }} className="h-full bg-purple-500/30" />
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[9px] font-black text-gray-600 uppercase tracking-[0.2em]">Network Link</span>
+                                  <span className="text-[9px] font-mono text-white/50">SECURE</span>
+                                </div>
+                                <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                                  <motion.div animate={{ width: ['40%', '60%', '50%'] }} transition={{ duration: 2, repeat: Infinity }} className="h-full bg-emerald-500/30" />
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="mt-8 flex justify-center">
+                             <div className="px-6 py-2 rounded-full border border-white/5 bg-white/5 backdrop-blur-md flex items-center gap-3">
+                               <RefreshCw className="w-3.5 h-3.5 text-gray-500 animate-spin-reverse" />
+                               <span className="text-[9px] font-mono font-black text-gray-500 uppercase tracking-[0.4em]">Calibrating structural arrays...</span>
+                             </div>
+                          </div>
+                        </motion.div>
+                      </div>
                     )}
                   </AnimatePresence>
                 </div>
@@ -1429,58 +2477,65 @@ export default function App() {
             >
               <button 
                 onClick={() => setActiveView('home')}
-                className="flex items-center gap-2 text-sm font-bold text-cyan-500 mb-8 hover:gap-3 transition-all"
+                className="flex items-center gap-2 text-sm font-black text-cyan-500 mb-8 group"
               >
-                <ArrowLeft className="w-4 h-4" /> Back to Workspace
+                <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 group-hover:scale-110 transition-transform">
+                  <ArrowLeft className="w-4 h-4" />
+                </div>
+                <span>Back to Matrix</span>
               </button>
               
               <div className={cn(
-                "rounded-3xl p-8 border shadow-2xl space-y-8",
-                isDarkMode ? "bg-white/[0.02] border-white/10" : "bg-white border-gray-100"
+                "rounded-[2.5rem] p-10 border shadow-2xl relative overflow-hidden backdrop-blur-3xl",
+                isDarkMode ? "bg-[#0c0c0e]/80 border-white/10" : "bg-white/80 border-gray-100"
               )}>
-                <div className="flex items-center gap-4">
-                   <div className="w-16 h-16 rounded-2xl bg-purple-500/10 flex items-center justify-center shadow-inner">
-                      <HelpCircle className="w-8 h-8 text-purple-500" />
-                   </div>
-                   <div>
-                      <h2 className="text-2xl font-black tracking-tight">App Information</h2>
-                      <p className="text-sm text-gray-500">Technical details and capabilities.</p>
-                   </div>
-                </div>
+                <div className="absolute top-0 right-0 w-64 h-64 bg-purple-500/10 rounded-full blur-[100px] -z-10" />
+                <div className="absolute bottom-0 left-0 w-64 h-64 bg-cyan-500/10 rounded-full blur-[100px] -z-10" />
 
-                <div className="space-y-6">
-                  <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
-                    <h4 className="font-bold text-white mb-2">Browser-Only Processing</h4>
-                    <p className="text-sm text-gray-400">Unlike other tools, VoxZip never uploads your files to a server. All compression and extraction happens locally in your browser's RAM and WebWorker sandbox.</p>
-                  </div>
-                  
-                  <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
-                    <h4 className="font-bold text-white mb-2">Supported Formats</h4>
-                    <p className="text-sm text-gray-400">Compression: .ZIP (Deflate/No-Store)</p>
-                    <p className="text-sm text-gray-400 mt-1">Extraction: .ZIP, .RAR (v4/v5), .7Z, .TAR, .GZ, .XZ, and more via LibArchive.js (WASM).</p>
-                  </div>
-
-                  <div className="p-6 rounded-2xl bg-white/5 border border-white/5">
-                    <h4 className="font-bold text-white mb-2">Security</h4>
-                    <p className="text-sm text-gray-400">VoxZip supports password-protected ZIP archives using standard ZipCrypto or AES encryption (browser capability depending).</p>
-                  </div>
-
-                  <div className="p-6 rounded-2xl bg-cyan-500/10 border border-cyan-500/20">
-                    <div className="flex items-center gap-3 mb-3">
-                      <Download className="w-5 h-5 text-cyan-500" />
-                      <h4 className="font-bold text-white">Standalone Experience</h4>
-                    </div>
-                    <p className="text-sm text-gray-400 leading-relaxed mb-4">You can install VoxZip as a standalone app on your device for a native-like experience and offline capabilities.</p>
-                    <div className="space-y-3">
-                      <div className="flex items-start gap-2">
-                        <div className="w-5 h-5 rounded-full bg-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">1</div>
-                        <p className="text-xs text-gray-400"><strong>iOS:</strong> Tap 'Share' in Safari, then select 'Add to Home Screen'.</p>
-                      </div>
-                      <div className="flex items-start gap-2">
-                        <div className="w-5 h-5 rounded-full bg-cyan-500/20 flex items-center justify-center shrink-0 mt-0.5 text-[10px] font-bold">2</div>
-                        <p className="text-xs text-gray-400"><strong>Android/Chrome:</strong> Tap the three dots menu and select 'Install app'.</p>
+                <div className="space-y-12">
+                  <div className="flex items-center gap-6">
+                    <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-cyan-400 to-purple-600 flex items-center justify-center p-0.5 shadow-2xl">
+                      <div className="w-full h-full rounded-[1.4rem] bg-[#0c0c0e] flex items-center justify-center">
+                        <Zap className="w-10 h-10 text-cyan-400 fill-cyan-400/20" />
                       </div>
                     </div>
+                    <div>
+                      <h2 className="text-4xl font-black tracking-tighter uppercase leading-none">VoxZip Core</h2>
+                      <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-[0.4em] mt-3 ml-1">Universal Archive Utility v{APP_VERSION}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {[
+                      { icon: <Shield className="text-cyan-500" />, title: "Zero Trust", desc: "No data ever leaves your hardware." },
+                      { icon: <Zap className="text-purple-500" />, title: "WASM Speed", desc: "Native-grade performance in-browser." },
+                      { icon: <ShieldCheck className="text-emerald-500" />, title: "AES-256", desc: "Military grade encryption standard." }
+                    ].map((item, i) => (
+                      <div key={i} className="p-6 rounded-3xl bg-white/[0.03] border border-white/5 space-y-3">
+                        <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center">
+                          {item.icon}
+                        </div>
+                        <h4 className="text-sm font-black tracking-widest uppercase">{item.title}</h4>
+                        <p className="text-[10px] text-gray-500 font-bold leading-relaxed">{item.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-6 pt-10 border-t border-white/5">
+                    <h3 className="text-xs font-black uppercase tracking-[0.2em] text-cyan-500">Legal Protocols</h3>
+                    <div className="prose prose-sm prose-invert max-w-none text-gray-500 font-bold text-[11px] leading-relaxed">
+                      <p>voxzip is a purely client-side tool. By using this software, you agree to the local processing of your data. We do not store, view, or transmit any files uploaded to this interface. The security of your archives is dependent on the strength of the passwords you provide.</p>
+                      <p className="mt-4">Designed for high-performance workflows requiring extreme privacy and speed.</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-4 pt-4">
+                    <button className="px-6 py-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                       <Github className="w-4 h-4" /> Source Repository
+                    </button>
+                    <button className="px-6 py-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all text-cyan-400 text-[10px] font-black uppercase tracking-widest">
+                       Documentation Hub
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1624,7 +2679,7 @@ export default function App() {
                 
                 <div>
                   <h3 className="text-3xl font-black tracking-tighter">VOXZIP</h3>
-                  <p className="text-[10px] font-mono font-bold text-cyan-500 uppercase tracking-widest mt-1">Version 2.2.0 • Pro Edition</p>
+                  <p className="text-[10px] font-mono font-bold text-cyan-500 uppercase tracking-widest mt-1">Version {APP_VERSION} • Pro Edition</p>
                 </div>
 
                 <p className="text-sm text-gray-500 leading-relaxed max-w-[280px] mx-auto">
@@ -1848,19 +2903,6 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
-
-      <style>{`
-        ::-webkit-scrollbar {
-          width: 8px;
-        }
-        ::-webkit-scrollbar-track {
-          background: ${isDarkMode ? '#0a0a0c' : '#f9fafb'};
-        }
-        ::-webkit-scrollbar-thumb {
-          background: ${isDarkMode ? '#1c1c21' : '#e5e7eb'};
-          border-radius: 20px;
-        }
-      `}</style>
     </div>
   );
 }
