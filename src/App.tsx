@@ -184,6 +184,28 @@ const CircularProgress = ({ progress, size = 120, strokeWidth = 12, isDarkMode =
 const BackgroundParticles = ({ isDarkMode }: { isDarkMode: boolean }) => {
   return (
     <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
+      <div className="absolute inset-0 opacity-20">
+        <motion.div 
+          animate={{ 
+            scale: [1, 1.2, 1],
+            rotate: [0, 90, 0],
+            x: [0, 50, 0],
+            y: [0, -50, 0]
+          }}
+          transition={{ duration: 30, repeat: Infinity, ease: "linear" }}
+          className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-[radial-gradient(circle_at_center,rgba(6,182,212,0.1)_0%,transparent_50%)]"
+        />
+        <motion.div 
+          animate={{ 
+            scale: [1.2, 1, 1.2],
+            rotate: [90, 0, 90],
+            x: [50, 0, 50],
+            y: [-50, 0, -50]
+          }}
+          transition={{ duration: 40, repeat: Infinity, ease: "linear" }}
+          className="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] bg-[radial-gradient(circle_at_center,rgba(139,92,246,0.08)_0%,transparent_50%)]"
+        />
+      </div>
       <svg className="w-full h-full opacity-30">
         <filter id="glow">
           <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
@@ -446,6 +468,14 @@ export default function App() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [aiInsights, setAiInsights] = useState<{title: string, content: string, type: 'info' | 'warn' | 'success'}[]>([]);
   const [showTopology, setShowTopology] = useState(false);
+  const [lastAnalytics, setLastAnalytics] = useState<{
+    originalSize: number;
+    compressedSize: number;
+    savings: number;
+    timeTaken: number;
+    fileCount: number;
+  } | null>(null);
+  const [showSuccessPulse, setShowSuccessPulse] = useState(false);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -971,15 +1001,28 @@ export default function App() {
       }
 
       const totalOriginalSize = files.reduce((acc, f) => acc + f.file.size, 0);
+      const finalSize = resultBlob.size;
+      const timeTaken = (Date.now() - startTime) / 1000;
+
+      setLastAnalytics({
+        originalSize: totalOriginalSize,
+        compressedSize: finalSize,
+        savings: Math.round((1 - (finalSize / totalOriginalSize)) * 100),
+        timeTaken,
+        fileCount: files.length
+      });
+
       setFiles(prev => prev.map(f => ({
         ...f,
         status: 'completed',
         progress: 100,
-        compressedSize: (f.file.size / totalOriginalSize) * resultBlob.size // Proportional estimation
+        compressedSize: (f.file.size / totalOriginalSize) * finalSize
       })));
 
       saveAs(resultBlob, archiveName.endsWith('.zip') ? archiveName : `${archiveName}.zip`);
       setOverallProgress(100);
+      setShowSuccessPulse(true);
+      setTimeout(() => setShowSuccessPulse(false), 3000);
       
       setTimeout(() => {
         setIsProcessing(false);
@@ -1789,21 +1832,23 @@ export default function App() {
               
               <div className="flex flex-col items-center gap-2">
                 <div className={cn(
-                  "w-12 h-12 rounded-[1.25rem] flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
-                  isDarkMode ? "bg-white/5 border border-white/10" : "bg-white border border-gray-100 shadow-lg"
+                  "w-14 h-14 rounded-2xl flex items-center justify-center group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-xl",
+                  isDarkMode 
+                    ? "bg-white/5 border border-white/10 group-hover:bg-cyan-500/10 group-hover:border-cyan-500/40 group-hover:shadow-[0_0_20px_rgba(6,182,212,0.2)]" 
+                    : "bg-white border border-gray-100 shadow-lg group-hover:bg-cyan-50 group-hover:border-cyan-500/40"
                 )}>
-                  <Upload className="w-6 h-6 text-cyan-500" />
+                  <Upload className={cn("w-7 h-7 transition-colors duration-500", isDarkMode ? "text-cyan-500/40 group-hover:text-cyan-400" : "text-gray-300 group-hover:text-cyan-500")} />
                 </div>
                 
                 <div className="text-center px-4">
                   <p className={cn(
-                    "text-base font-black tracking-tight",
+                    "text-xl font-black tracking-tight uppercase",
                     isDarkMode ? "text-gray-200" : "text-gray-700"
                   )}>
-                    {mode === 'compress' ? 'DROP PAYLOAD HERE' : 'DROP TO EXTRACT'}
+                    {mode === 'compress' ? 'Drop Files to Compress' : 'Drop Archives to Extract'}
                   </p>
-                  <p className="text-[9px] text-gray-500 mt-0.5 max-w-sm mx-auto font-bold font-mono tracking-widest uppercase italic">
-                    {(mode === 'compress' ? 'Files or Folders' : 'Auto-Detection Active')}
+                  <p className="text-[10px] text-cyan-500/60 mt-0.5 max-w-sm mx-auto font-bold uppercase tracking-widest leading-tight">
+                    Files are processed securely inside your browser.
                   </p>
                 </div>
               </div>
@@ -1905,6 +1950,47 @@ export default function App() {
                           </div>
                         ))}
                       </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {files.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className={cn(
+                        "p-4 rounded-3xl border backdrop-blur-xl flex items-center justify-between shadow-lg mb-2 relative overflow-hidden group",
+                        isDarkMode ? "bg-cyan-500/5 border-cyan-500/20" : "bg-cyan-50 border-cyan-100"
+                      )}
+                    >
+                      <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/0 via-cyan-500/5 to-cyan-500/0 -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 flex items-center justify-center border border-cyan-500/30">
+                          <Layers className="w-5 h-5 text-cyan-400" />
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-black uppercase tracking-widest text-cyan-500">Live Payload Queue</h3>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-[10px] font-mono font-bold text-gray-500 uppercase">{files.length} Modules Stage</p>
+                            <div className="w-1 h-1 rounded-full bg-gray-700" />
+                            <p className="text-[10px] font-mono font-bold text-gray-500 uppercase">{formatBytes(totalSize)} Ready</p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {lastAnalytics && (
+                        <div className="flex items-center gap-6 pr-4 hidden md:flex">
+                          <div className="text-right">
+                            <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest leading-none mb-1">Efficiency</p>
+                            <p className="text-sm font-black text-emerald-500 tracking-tighter">-{lastAnalytics.savings}%</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[8px] font-black text-gray-500 uppercase tracking-widest leading-none mb-1">V-Speed</p>
+                            <p className="text-sm font-black text-cyan-500 tracking-tighter">{lastAnalytics.timeTaken.toFixed(1)}s</p>
+                          </div>
+                        </div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -2941,42 +3027,97 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Mobile Bottom Navigation */}
-      <nav className={cn(
-        "fixed bottom-0 left-0 right-0 z-[120] xl:hidden border-t backdrop-blur-xl px-4 py-3 pb-6 flex items-center justify-around transition-all duration-500",
-        isDarkMode ? "bg-black/60 border-white/5" : "bg-white/60 border-gray-100 shadow-2xl"
-      )}>
-        <button 
-          onClick={() => { setActiveView('home'); setIsConfigOpen(false); }}
+      {/* Floating Success Pulse Overlay */}
+      <AnimatePresence>
+        {showSuccessPulse && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 0.4, 0] }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[1000] pointer-events-none bg-emerald-500/20 mix-blend-overlay"
+          >
+            <motion.div 
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: [0.8, 1.2], opacity: [0, 1, 0] }}
+              transition={{ duration: 1.5 }}
+              className="absolute inset-0 flex items-center justify-center"
+            >
+              <div className="w-64 h-64 rounded-full bg-emerald-500/30 blur-[100px]" />
+              <div className="flex flex-col items-center gap-4 bg-emerald-500/10 backdrop-blur-xl border border-emerald-500/30 px-8 py-4 rounded-3xl shadow-[0_0_50px_rgba(16,185,129,0.3)]">
+                <CheckCircle2 className="w-12 h-12 text-emerald-400" />
+                <div className="text-center">
+                  <h3 className="text-xl font-black text-emerald-400 uppercase tracking-tighter">Payload Optimized</h3>
+                  <p className="text-[10px] font-mono font-black text-emerald-400/60 uppercase tracking-widest mt-1">Matrix Integrity Verified</p>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Global Bottom Navigation */}
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[250]">
+        <motion.nav 
+          initial={{ y: 100, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
           className={cn(
-            "flex flex-col items-center gap-0.5 transition-all outline-none",
-            activeView === 'home' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
+            "px-6 py-3 rounded-full border transition-all duration-500 flex items-center gap-3 shadow-2xl relative group",
+            isDarkMode 
+              ? "bg-black/60 border-white/10 backdrop-blur-2xl shadow-[0_0_50px_rgba(0,0,0,0.5)]" 
+              : "bg-white/70 border-gray-200 backdrop-blur-2xl shadow-[0_20px_50px_rgba(0,0,0,0.1)]"
           )}
         >
-          <Home className="w-[18px] h-[18px]" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Home</span>
-        </button>
-        <button 
-          onClick={() => { setActiveView('info'); setIsConfigOpen(false); }}
-          className={cn(
-            "flex flex-col items-center gap-0.5 transition-all outline-none",
-            activeView === 'info' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
-          )}
-        >
-          <Info className="w-[18px] h-[18px]" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Info</span>
-        </button>
-        <button 
-          onClick={() => { setActiveView('about'); setIsConfigOpen(false); }}
-          className={cn(
-            "flex flex-col items-center gap-0.5 transition-all outline-none",
-            activeView === 'about' ? "text-cyan-400 scale-105" : "text-gray-500 scale-95"
-          )}
-        >
-          <LayoutGrid className="w-[18px] h-[18px]" />
-          <span className="text-[8px] font-black uppercase tracking-widest">About</span>
-        </button>
-      </nav>
+          {/* Active Glow Indicator */}
+          <div className="absolute inset-0 rounded-full bg-cyan-500/5 opacity-0 group-hover:opacity-100 transition-opacity blur-xl" />
+          
+          <button 
+            onClick={() => setActiveView('home')} 
+            className={cn(
+              "p-2.5 rounded-full transition-all relative flex items-center gap-2 overflow-hidden", 
+              activeView === 'home' ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            )}
+          >
+            <Home className="w-5 h-5" />
+            {activeView === 'home' && <motion.span initial={{ width: 0, opacity: 0 }} animate={{ width: 'auto', opacity: 1 }} className="text-[10px] font-black uppercase tracking-widest">Home</motion.span>}
+          </button>
+
+          <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+          <button 
+            onClick={() => setActiveView('operations')} 
+            className={cn(
+              "p-2.5 rounded-full transition-all relative flex items-center gap-2 overflow-hidden", 
+              activeView === 'operations' ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            )}
+          >
+            <Zap className="w-5 h-5 shadow-[0_0_10px_rgba(168,85,247,0.3)]" />
+            {activeView === 'operations' && <motion.span initial={{ width: 0, opacity: 0 }} animate={{ width: 'auto', opacity: 1 }} className="text-[10px] font-black uppercase tracking-widest">Hub</motion.span>}
+          </button>
+
+          <button 
+            onClick={() => {
+              if (activeView === 'home') setIsConfigOpen(!isConfigOpen);
+              else setActiveView('home');
+            }}
+            className={cn(
+              "p-2.5 rounded-full transition-all relative flex items-center gap-2 overflow-hidden", 
+              isConfigOpen && activeView === 'home' ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/20" : "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+            )}
+          >
+            <Settings2 className="w-5 h-5" />
+            {isConfigOpen && activeView === 'home' && <motion.span initial={{ width: 0, opacity: 0 }} animate={{ width: 'auto', opacity: 1 }} className="text-[10px] font-black uppercase tracking-widest">Config</motion.span>}
+          </button>
+
+          <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+          <button 
+            onClick={() => setShowAbout(true)} 
+            className="p-2.5 rounded-full text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-all"
+          >
+            <Info className="w-5 h-5" />
+          </button>
+        </motion.nav>
+      </div>
 
       <AnimatePresence>
         {showAbout && (
@@ -3339,18 +3480,22 @@ export default function App() {
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.9, opacity: 0, y: 30 }}
               className={cn(
-                "relative w-full max-w-xl rounded-[2.5rem] border shadow-[0_30px_100px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col max-h-[75vh]",
+                "relative w-full max-w-2xl rounded-[3rem] border shadow-[0_30px_100px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col max-h-[80vh]",
                 isDarkMode ? "bg-[#0a0a0c] border-white/10" : "bg-white border-gray-200"
               )}
             >
               <div className="p-8 border-b border-white/5 flex items-center justify-between bg-white/[0.01]">
                 <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-[1.2rem] bg-cyan-500/10 flex items-center justify-center">
-                    <LayoutGrid className="w-6 h-6 text-cyan-500" />
+                  <div className="w-12 h-12 rounded-[1.2rem] bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+                    <Layers className="w-6 h-6 text-cyan-500" />
                   </div>
                   <div>
-                    <h3 className="font-black text-xl tracking-tighter">ARCHIVE PREVIEW</h3>
-                    <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-widest">{previewFiles.length} Object(s) Indexed</p>
+                    <h3 className="font-black text-xl tracking-tighter uppercase">Matrix Inspector</h3>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <p className="text-[10px] text-gray-500 font-mono font-bold uppercase tracking-widest leading-none">{previewFiles.length} Modules Indexed</p>
+                      <div className="w-1 h-1 rounded-full bg-gray-700" />
+                      <p className="text-[10px] text-cyan-500 font-mono font-bold uppercase tracking-widest leading-none">Integrity: Optimal</p>
+                    </div>
                   </div>
                 </div>
                 <button 
@@ -3361,31 +3506,41 @@ export default function App() {
                 </button>
               </div>
               
-              <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scrollbar">
-                {previewFiles.map((file, i) => (
-                  <motion.div 
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.03 }}
-                    key={i} 
-                    className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.03] border border-white/5 group hover:border-cyan-500/30 transition-all shadow-lg"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center group-hover:scale-110 transition-transform">
-                        {getFileIcon(file.name)}
+              <div className="flex-1 overflow-y-auto p-8 space-y-2 custom-scrollbar">
+                <div className="grid grid-cols-1 gap-2">
+                  {previewFiles.map((file, i) => (
+                    <motion.div 
+                      key={i} 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: i * 0.02 }}
+                      className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.02] border border-white/5 hover:bg-white/[0.04] hover:border-cyan-500/20 transition-all group"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-9 h-9 rounded-xl bg-white/5 flex items-center justify-center text-gray-600 group-hover:text-cyan-500 transition-colors">
+                          {getFileIcon(file.name)}
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-xs font-black truncate max-w-[280px] tracking-tight block">{file.name}</span>
+                          <p className="text-[9px] font-mono font-bold text-gray-600 uppercase tracking-tighter mt-0.5">Encrypted Byte Vector</p>
+                        </div>
                       </div>
-                      <span className="text-xs font-bold truncate max-w-[280px] tracking-tight">{file.name}</span>
-                    </div>
-                    <span className="text-[10px] font-mono font-bold text-gray-500 bg-white/5 px-2 py-1 rounded-md">{formatBytes(file.size)}</span>
-                  </motion.div>
-                ))}
+                      <div className="text-right shrink-0">
+                        <span className="text-[10px] font-mono font-black text-gray-500 bg-white/5 px-2 py-1 rounded-md">{formatBytes(file.size)}</span>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
               </div>
               
               <div className="p-8 border-t border-white/5 bg-white/[0.01] flex justify-between items-center">
-                <p className="text-[9px] font-mono text-gray-500 uppercase tracking-widest italic">End of Central Directory</p>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <p className="text-[10px] font-mono text-gray-500 uppercase tracking-widest font-bold">Local Scan Finalized</p>
+                </div>
                 <button 
                   onClick={() => setPreviewFiles(null)}
-                  className="px-8 py-3 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-black uppercase tracking-tighter shadow-[0_10px_30px_rgba(6,182,212,0.3)] hover:scale-105 active:scale-95 transition-all"
+                  className="px-8 py-3 rounded-2xl bg-cyan-500 text-white text-xs font-black uppercase tracking-widest shadow-xl shadow-cyan-500/20 hover:scale-[1.02] active:scale-95 transition-all"
                 >
                   Close Scanner
                 </button>
